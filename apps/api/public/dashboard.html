@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PaYa API Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #12121a;
+      --bg-tertiary: #1a1a24;
+      --bg-card: #15151f;
+      --border: #2a2a3a;
+      --text-primary: #f0f0f5;
+      --text-secondary: #8888a0;
+      --text-muted: #555566;
+      --accent: #298a61;
+      --accent-dim: #298a61;
+      --accent-glow: rgba(0, 212, 170, 0.15);
+      --success: #22c55e;
+      --warning: #503a15;
+      --error: #ef4444;
+      --purple: #a855f7;
+      --blue: #3b82f6;
+
+      
+      --font-heading: 'Manrope', Georgia, serif;
+      --font-body: 'DM Sans', system-ui, sans-serif;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      background-image: 
+        radial-gradient(ellipse at 50% 0%, rgba(0, 212, 170, 0.08) 0%, transparent 50%),
+        radial-gradient(ellipse at 100% 100%, rgba(168, 85, 247, 0.05) 0%, transparent 40%);
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--accent), var(--purple));
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .logo-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .logo h1 {
+      font-size: 1.5rem;
+      font-family: var(--font-heading);
+      font-weight: 800;
+      color: var(--accent);
+    }
+
+    .logo span {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .connection-status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--error);
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.connected {
+      background: var(--success);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent), var(--purple));
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .stat-card:hover::before {
+      opacity: 1;
+    }
+
+    .stat-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+
+    .stat-value {
+      font-size: 1.75rem;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 1.5rem;
+    }
+
+    .panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-tertiary);
+    }
+
+    .panel-title {
+      font-size: 0.875rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .panel-title svg {
+      width: 16px;
+      height: 16px;
+      color: var(--accent);
+    }
+
+    .panel-body {
+      padding: 1rem;
+      max-height: 500px;
+      overflow-y: auto;
+    }
+
+    .panel-body::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .panel-body::-webkit-scrollbar-track {
+      background: var(--bg-secondary);
+    }
+
+    .panel-body::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    /* Users Grid */
+    .users-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.75rem;
+    }
+
+    .user-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .user-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .user-card.selected {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+    }
+
+    .user-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+
+    .username {
+      font-weight: 600;
+      color: var(--accent);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .user-balance {
+      font-size: 1.25rem;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .user-stats {
+      display: flex;
+      gap: 1rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Transaction Feed */
+    .tx-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .tx-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.75rem;
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      font-size: 0.875rem;
+      animation: slideIn 0.3s ease-out;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateX(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    .tx-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+    }
+
+    .tx-icon.payment { background: rgba(0, 212, 170, 0.15); }
+    .tx-icon.load { background: rgba(59, 130, 246, 0.15); }
+    .tx-icon.reward { background: rgba(168, 85, 247, 0.15); }
+
+    .tx-details {
+      flex: 1;
+    }
+
+    .tx-users {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+    }
+
+    .tx-memo {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      margin-top: 2px;
+    }
+
+    .tx-amount {
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--accent);
+    }
+
+    .tx-time {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Send Payment Form */
+    .send-form {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+    }
+
+    .form-label {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .form-input, .form-select {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      color: var(--text-primary);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.875rem;
+      transition: border-color 0.2s;
+    }
+
+    .form-input:focus, .form-select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .form-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .btn {
+      padding: 0.875rem 1.5rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.875rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      border: none;
+      font-family: 'Outfit', sans-serif;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+      color: var(--bg-primary);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-secondary {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--accent);
+    }
+
+    /* Mint Section */
+    .mint-section {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .mint-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .mint-row .form-input {
+      flex: 1;
+    }
+
+    /* Toast Notifications */
+    .toast-container {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      z-index: 1000;
+    }
+
+    .toast {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      animation: toastIn 0.3s ease-out;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    }
+
+    .toast.success { border-left: 3px solid var(--success); }
+    .toast.error { border-left: 3px solid var(--error); }
+
+    @keyframes toastIn {
+      from {
+        opacity: 0;
+        transform: translateX(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-muted);
+    }
+
+    .live-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      font-size: 0.7rem;
+      color: var(--success);
+      font-family: 'JetBrains Mono', monospace;
+      text-transform: uppercase;
+    }
+
+    .live-indicator::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: var(--success);
+      border-radius: 50%;
+      animation: pulse 1.5s infinite;
+    }
+
+    @media (max-width: 1024px) {
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .main-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 640px) {
+      .stats-grid { grid-template-columns: 1fr; }
+      .users-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <div class="logo-icon">
+          <img src="/dashboard/assets/app-icon.png" alt="PaYa Logo">
+        </div>
+        <div>
+          <h1>PaYa</h1>
+          <span>API Dashboard • Development</span>
+        </div>
+      </div>
+      <div class="connection-status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Connecting...</span>
+      </div>
+    </header>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Users</div>
+        <div class="stat-value" id="statUsers">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Transactions</div>
+        <div class="stat-value" id="statTransactions">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Last Hour</div>
+        <div class="stat-value" id="statLastHour">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Tokens Circulating</div>
+        <div class="stat-value" id="statTokens">-</div>
+      </div>
+    </div>
+
+    <div class="main-grid">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            Users & Wallets
+          </div>
+          <button class="btn btn-secondary" onclick="refreshUsers()" style="padding: 0.5rem 1rem; font-size: 0.75rem;">
+            Refresh
+          </button>
+        </div>
+        <div class="panel-body">
+          <div class="users-grid" id="usersGrid">
+            <div class="empty-state">Loading users...</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="1" x2="12" y2="23"/>
+                <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+              </svg>
+              Send Payment
+            </div>
+          </div>
+          <div class="panel-body">
+            <form class="send-form" onsubmit="sendPayment(event)">
+              <div class="form-group">
+                <label class="form-label">From User</label>
+                <select class="form-select" id="fromUser" required>
+                  <option value="">Select sender...</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">To User</label>
+                <select class="form-select" id="toUser" required>
+                  <option value="">Select recipient...</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Amount (tokens)</label>
+                <input type="number" class="form-input" id="amount" min="1" placeholder="Enter amount" required>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Memo (optional)</label>
+                <input type="text" class="form-input" id="memo" placeholder="What's this for?">
+              </div>
+              <button type="submit" class="btn btn-primary" id="sendBtn">
+                Send Payment
+              </button>
+            </form>
+
+            <div class="mint-section">
+              <div class="form-label" style="margin-bottom: 0.5rem;">Mint Test Tokens</div>
+              <div class="mint-row">
+                <input type="number" class="form-input" id="mintAmount" min="1" max="10000" placeholder="Amount">
+                <button class="btn btn-secondary" onclick="mintTokens()" style="white-space: nowrap;">
+                  Mint to Selected
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" style="flex: 1;">
+          <div class="panel-header">
+            <div class="panel-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              Recent Activity
+            </div>
+            <span class="live-indicator">Live</span>
+          </div>
+          <div class="panel-body" id="activityFeed">
+            <div class="empty-state">No transactions yet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script>
+    const API_BASE = 'http://localhost:3000';
+    let users = [];
+    let selectedUser = null;
+    let authToken = null;
+    let ws = null;
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+      checkConnection();
+      refreshStats();
+      refreshUsers();
+      refreshTransactions();
+      connectWebSocket();
+      
+      // Auto-refresh
+      setInterval(refreshStats, 10000);
+      setInterval(refreshTransactions, 5000);
+    });
+
+    async function checkConnection() {
+      try {
+        const res = await fetch(`${API_BASE}/health/`);
+        if (res.ok) {
+          document.getElementById('statusDot').classList.add('connected');
+          document.getElementById('statusText').textContent = 'Connected';
+        }
+      } catch (e) {
+        document.getElementById('statusText').textContent = 'Disconnected';
+      }
+    }
+
+    async function refreshStats() {
+      try {
+        const res = await fetch(`${API_BASE}/dev/stats`);
+        const { data } = await res.json();
+        document.getElementById('statUsers').textContent = data.users;
+        document.getElementById('statTransactions').textContent = data.transactions;
+        document.getElementById('statLastHour').textContent = data.transactionsLastHour;
+        document.getElementById('statTokens').textContent = data.totalTokensCirculating.toLocaleString();
+      } catch (e) {
+        console.error('Failed to fetch stats:', e);
+      }
+    }
+
+    async function refreshUsers() {
+      try {
+        const res = await fetch(`${API_BASE}/dev/users`);
+        const { data } = await res.json();
+        users = data;
+        renderUsers();
+        updateUserSelects();
+      } catch (e) {
+        console.error('Failed to fetch users:', e);
+      }
+    }
+
+    function renderUsers() {
+      const grid = document.getElementById('usersGrid');
+      if (users.length === 0) {
+        grid.innerHTML = '<div class="empty-state">No users found</div>';
+        return;
+      }
+
+      grid.innerHTML = users.map(u => `
+        <div class="user-card ${selectedUser?.id === u.id ? 'selected' : ''}" 
+             onclick="selectUser('${u.id}')">
+          <div class="user-header">
+            <span class="username">@${u.username}</span>
+            <span style="font-size: 0.7rem; color: var(--text-muted);">${u.status}</span>
+          </div>
+          <div class="user-balance">${u.balance.toLocaleString()} <span style="font-size: 0.75rem; color: var(--text-secondary);">tokens</span></div>
+          <div class="user-stats">
+            <span>↑ ${u.totalSent}</span>
+            <span>↓ ${u.totalReceived}</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function updateUserSelects() {
+      const fromSelect = document.getElementById('fromUser');
+      const toSelect = document.getElementById('toUser');
+      
+      const options = users.map(u => `<option value="${u.username}">${u.username} (${u.balance} tokens)</option>`).join('');
+      
+      fromSelect.innerHTML = '<option value="">Select sender...</option>' + options;
+      toSelect.innerHTML = '<option value="">Select recipient...</option>' + options;
+    }
+
+    function selectUser(userId) {
+      selectedUser = users.find(u => u.id === userId);
+      renderUsers();
+      
+      // Auto-fill the from user
+      if (selectedUser) {
+        document.getElementById('fromUser').value = selectedUser.username;
+      }
+    }
+
+    async function refreshTransactions() {
+      try {
+        const res = await fetch(`${API_BASE}/dev/transactions?limit=20`);
+        const { data } = await res.json();
+        renderTransactions(data);
+      } catch (e) {
+        console.error('Failed to fetch transactions:', e);
+      }
+    }
+
+    function renderTransactions(transactions) {
+      const feed = document.getElementById('activityFeed');
+      
+      if (transactions.length === 0) {
+        feed.innerHTML = '<div class="empty-state">No transactions yet</div>';
+        return;
+      }
+
+      feed.innerHTML = '<div class="tx-list">' + transactions.map(tx => {
+        const icon = tx.type === 'payment' ? '💸' : tx.type === 'load' ? '💰' : '🎁';
+        const iconClass = tx.type;
+        const time = new Date(tx.createdAt).toLocaleTimeString();
+        
+        let users = '';
+        if (tx.fromUsername && tx.toUsername) {
+          users = `@${tx.fromUsername} → @${tx.toUsername}`;
+        } else if (tx.toUsername) {
+          users = `→ @${tx.toUsername}`;
+        } else if (tx.fromUsername) {
+          users = `@${tx.fromUsername} →`;
+        }
+
+        return `
+          <div class="tx-item">
+            <div class="tx-icon ${iconClass}">${icon}</div>
+            <div class="tx-details">
+              <div class="tx-users">${users}</div>
+              ${tx.memo ? `<div class="tx-memo">${tx.memo}</div>` : ''}
+            </div>
+            <div style="text-align: right;">
+              <div class="tx-amount">${tx.amount}</div>
+              <div class="tx-time">${time}</div>
+            </div>
+          </div>
+        `;
+      }).join('') + '</div>';
+    }
+
+    async function sendPayment(e) {
+      e.preventDefault();
+      
+      const fromUsername = document.getElementById('fromUser').value;
+      const toUsername = document.getElementById('toUser').value;
+      const amount = parseInt(document.getElementById('amount').value);
+      const memo = document.getElementById('memo').value;
+
+      if (fromUsername === toUsername) {
+        showToast('Cannot send to yourself', 'error');
+        return;
+      }
+
+      const sendBtn = document.getElementById('sendBtn');
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Sending...';
+
+      try {
+        // First login as the sender
+        const loginRes = await fetch(`${API_BASE}/dev/login/${fromUsername}`, { method: 'POST' });
+        const loginData = await loginRes.json();
+        
+        if (!loginData.success) {
+          throw new Error(loginData.error?.message || 'Login failed');
+        }
+
+        const token = loginData.data.accessToken;
+
+        // Send the payment
+        const paymentRes = await fetch(`${API_BASE}/payments/send`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            toUsername,
+            amount,
+            memo: memo || undefined,
+            isPublic: true
+          })
+        });
+
+        const paymentData = await paymentRes.json();
+
+        if (!paymentData.success) {
+          throw new Error(paymentData.error?.message || 'Payment failed');
+        }
+
+        showToast(`Sent ${amount} tokens from @${fromUsername} to @${toUsername}`, 'success');
+        
+        // Clear form
+        document.getElementById('amount').value = '';
+        document.getElementById('memo').value = '';
+        
+        // Refresh data
+        refreshUsers();
+        refreshTransactions();
+        refreshStats();
+
+      } catch (error) {
+        showToast(error.message, 'error');
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Send Payment';
+      }
+    }
+
+    async function mintTokens() {
+      const amount = parseInt(document.getElementById('mintAmount').value);
+      const fromUsername = document.getElementById('fromUser').value;
+      
+      if (!fromUsername) {
+        showToast('Select a user first (From User field)', 'error');
+        return;
+      }
+
+      if (!amount || amount < 1) {
+        showToast('Enter a valid amount', 'error');
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/dev/mint/${fromUsername}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ amount })
+        });
+
+        const data = await res.json();
+
+        if (!data.success) {
+          throw new Error(data.error?.message || 'Mint failed');
+        }
+
+        showToast(`Minted ${amount} tokens to @${fromUsername}`, 'success');
+        document.getElementById('mintAmount').value = '';
+        refreshUsers();
+        refreshStats();
+
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    }
+
+    function connectWebSocket() {
+      try {
+        ws = new WebSocket(`ws://localhost:3000/feed/live`);
+        
+        ws.onopen = () => {
+          console.log('WebSocket connected');
+        };
+
+        ws.onmessage = (event) => {
+          const message = JSON.parse(event.data);
+          if (message.type === 'new_payment') {
+            refreshTransactions();
+            refreshUsers();
+            refreshStats();
+          }
+        };
+
+        ws.onclose = () => {
+          console.log('WebSocket disconnected, reconnecting...');
+          setTimeout(connectWebSocket, 3000);
+        };
+      } catch (e) {
+        console.error('WebSocket error:', e);
+      }
+    }
+
+    function showToast(message, type = 'success') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.innerHTML = `
+        <span>${type === 'success' ? '✓' : '✕'}</span>
+        <span>${message}</span>
+      `;
+      container.appendChild(toast);
+      
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 300);
+      }, 4000);
+    }
+  </script>
+</body>
+</html>
+
