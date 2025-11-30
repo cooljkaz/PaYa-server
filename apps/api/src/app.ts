@@ -26,6 +26,7 @@ import { bankRoutes } from './routes/bank.js';
 import { transparencyRoutes } from './routes/transparency.js';
 import { adminRoutes } from './routes/admin.js';
 import { devRoutes } from './routes/dev.js';
+import { webhookRoutes } from './routes/webhooks.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -37,7 +38,7 @@ export async function buildApp() {
   // CORS
   await app.register(cors, {
     origin: process.env.NODE_ENV === 'production' 
-      ? ['https://paya.app'] // Update with your domain
+      ? ['https://paya.cash'] // Production domain
       : true,
     credentials: true,
   });
@@ -147,6 +148,7 @@ export async function buildApp() {
   await app.register(transparencyRoutes, { prefix: '/transparency' });
   await app.register(adminRoutes, { prefix: '/admin' });
   await app.register(devRoutes, { prefix: '/dev' });
+  await app.register(webhookRoutes, { prefix: '/webhooks' });
 
   // Root route
   app.get('/', async () => {

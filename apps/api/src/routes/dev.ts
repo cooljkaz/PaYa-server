@@ -260,5 +260,128 @@ export const devRoutes: FastifyPluginAsync = async (app) => {
       };
     }
   );
+
+  /**
+   * POST /dev/weekly-cycle
+   * Create or update the current weekly cycle with test revenue data
+   * This simulates fee accumulation for testing the rewards display
+   */
+  app.post<{ Body: { revenue?: number; activeUsers?: number } }>(
+    '/weekly-cycle',
+    async (request) => {
+      const { revenue = 10000, activeUsers = 5 } = request.body || {};
+
+      // Calculate week number (YYYYWW format)
+      const now = new Date();
+      const startOfYear = new Date(now.getFullYear(), 0, 1);
+      const weekNumber = Math.ceil(
+        ((now.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getDay() + 1) / 7
+      );
+      const fullWeekNumber = now.getFullYear() * 100 + weekNumber;
+
+      // Week boundaries (Monday to Sunday)
+      const dayOfWeek = now.getDay();
+      const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+      const startsAt = new Date(now);
+      startsAt.setDate(now.getDate() + mondayOffset);
+      startsAt.setHours(0, 0, 0, 0);
+      
+      const endsAt = new Date(startsAt);
+      endsAt.setDate(startsAt.getDate() + 6);
+      endsAt.setHours(23, 59, 59, 999);
+
+      // Revenue split: 30% ops, 70% user pool (all values in cents)
+      const opsAllocation = Math.floor(revenue * 0.30);
+      const userPool = revenue - opsAllocation;
+      // Per-user reward floored to whole dollars (in cents), remainder carries over
+      const perUserRewardCents = activeUsers > 0 ? Math.floor(userPool / activeUsers) : 0;
+      // Floor to nearest 100 cents ($1) - extra cents carry to next week
+      const perUserRewardWholeDollars = Math.floor(perUserRewardCents / 100) * 100;
+      const remainder = activeUsers > 0 ? userPool - (perUserRewardWholeDollars * activeUsers) : 0;
+
+      const cycle = await prisma.weeklyCycle.upsert({
+        where: { weekNumber: fullWeekNumber },
+        create: {
+          weekNumber: fullWeekNumber,
+          startsAt,
+          endsAt,
+          totalRevenue: revenue,
+          opsAllocation,
+          userPool,
+          remainder,
+          activeUserCount: activeUsers,
+          perUserReward: perUserRewardWholeDollars,
+          status: 'distributed',
+          distributedAt: new Date(),
+        },
+        update: {
+          totalRevenue: revenue,
+          opsAllocation,
+          userPool,
+          remainder,
+          activeUserCount: activeUsers,
+          perUserReward: perUserRewardWholeDollars,
+          status: 'distributed',
+          distributedAt: new Date(),
+        },
+      });
+
+      request.log.info({ weekNumber: fullWeekNumber, revenue, perUserReward: perUserRewardWholeDollars, remainder }, '[DEV] Weekly cycle updated');
+
+      return {
+        success: true,
+        data: {
+          weekNumber: cycle.weekNumber,
+          totalRevenue: Number(cycle.totalRevenue) / 100, // Convert cents to dollars for display
+          opsAllocation: Number(cycle.opsAllocation) / 100,
+          userPool: Number(cycle.userPool) / 100,
+          activeUserCount: cycle.activeUserCount,
+          perUserReward: Number(cycle.perUserReward) / 100, // Already floored to whole dollars
+          remainder: Number(cycle.remainder) / 100, // Cents carried to next week
+          status: cycle.status,
+        },
+      };
+    }
+  );
+
+  /**
+   * GET /dev/weekly-cycle
+   * Get the current weekly cycle data
+   */
+  app.get('/weekly-cycle', async () => {
+    const now = new Date();
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+    const weekNumber = Math.ceil(
+      ((now.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getDay() + 1) / 7
+    );
+    const fullWeekNumber = now.getFullYear() * 100 + weekNumber;
+
+    const cycle = await prisma.weeklyCycle.findUnique({
+      where: { weekNumber: fullWeekNumber },
+    });
+
+    if (!cycle) {
+      return {
+        success: true,
+        data: null,
+        message: 'No weekly cycle found. Use POST /dev/weekly-cycle to create one.',
+      };
+    }
+
+    return {
+      success: true,
+      data: {
+        weekNumber: cycle.weekNumber,
+        totalRevenue: Number(cycle.totalRevenue) / 100,
+        opsAllocation: Number(cycle.opsAllocation) / 100,
+        userPool: Number(cycle.userPool) / 100,
+        activeUserCount: cycle.activeUserCount,
+        perUserReward: Number(cycle.perUserReward) / 100,
+        status: cycle.status,
+        startsAt: cycle.startsAt,
+        endsAt: cycle.endsAt,
+      },
+    };
+  });
 };
 

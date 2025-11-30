@@ -18,6 +18,11 @@ model User {
   phoneHash    String   @unique @map("phone_hash") @db.VarChar(64)
   phoneLastFour String  @map("phone_last_four") @db.VarChar(4)
   
+  // Synctera customer ID (for KYC and banking)
+  syncteraCustomerId String? @unique @map("synctera_customer_id") @db.VarChar(100)
+  syncteraAccountId  String? @unique @map("synctera_account_id") @db.VarChar(100)
+  kycStatus          String? @map("kyc_status") @db.VarChar(20) // pending, verified, rejected
+  
   status       String   @default("active") @db.VarChar(20) // active, frozen, suspended, deleted
   flags        Json     @default("[]") // ['fraud_review', 'reward_ineligible', 'new_account']
   
@@ -33,12 +38,17 @@ model User {
   sentTransactions     Transaction[] @relation("SentTransactions")
   receivedTransactions Transaction[] @relation("ReceivedTransactions")
   
+  // Pending payments to non-users
+  sentPendingPayments    PendingPayment[] @relation("SentPendingPayments")
+  claimedPendingPayments PendingPayment[] @relation("ClaimedPendingPayments")
+  
   weeklyActivity WeeklyActivity[]
 
   @@index([username])
   @@index([phoneHash])
   @@index([status])
   @@index([createdAt])
+  @@index([syncteraCustomerId])
   @@map("users")
 }
 
@@ -72,14 +82,17 @@ model BankAccount {
   id               String   @id @default(uuid())
   userId           String   @map("user_id")
   
-  // Plaid tokens (encrypted in practice)
-  plaidAccessToken String   @map("plaid_access_token") @db.Text
-  plaidAccountId   String   @map("plaid_account_id") @db.VarChar(100)
-  plaidItemId      String   @map("plaid_item_id") @db.VarChar(100)
+  // Synctera external account reference
+  syncteraExternalAccountId String? @unique @map("synctera_external_account_id") @db.VarChar(100)
   
-  // Dwolla funding source
-  dwollaSourceId   String?  @map("dwolla_source_id") @db.VarChar(100)
-  dwollaSourceUrl  String?  @map("dwolla_source_url") @db.Text
+  // Bank account details (from Synctera or manual entry)
+  routingNumber    String?  @map("routing_number") @db.VarChar(9)
+  accountNumberLast4 String? @map("account_number_last4") @db.VarChar(4)
+  
+  // Plaid integration (for instant bank linking)
+  plaidAccessToken String?  @map("plaid_access_token") @db.Text
+  plaidAccountId   String?  @map("plaid_account_id") @db.VarChar(100)
+  plaidItemId      String?  @map("plaid_item_id") @db.VarChar(100)
   
   // Display info
   institutionName  String?  @map("institution_name") @db.VarChar(100)
@@ -87,7 +100,7 @@ model BankAccount {
   accountMask      String?  @map("account_mask") @db.VarChar(4)
   accountType      String?  @map("account_type") @db.VarChar(20) // checking, savings
   
-  status           String   @default("pending") @db.VarChar(20) // pending, verified, failed, removed
+  status           String   @default("pending") @db.VarChar(20) // pending, verification_pending, verified, failed, removed
   verifiedAt       DateTime? @map("verified_at")
   
   createdAt        DateTime @default(now()) @map("created_at")
@@ -99,6 +112,7 @@ model BankAccount {
 
   @@index([userId])
   @@index([status])
+  @@index([syncteraExternalAccountId])
   @@map("bank_accounts")
 }
 
@@ -313,5 +327,45 @@ model RateLimitCounter {
   @@index([userId])
   @@index([windowStart])
   @@map("rate_limit_counters")
+}
+
+// ================== PENDING PAYMENTS (to non-users) ==================
+
+model PendingPayment {
+  id              String   @id @default(uuid())
+  
+  fromUserId      String   @map("from_user_id")
+  toPhoneHash     String   @map("to_phone_hash") @db.VarChar(64)
+  toPhoneLastFour String   @map("to_phone_last_four") @db.VarChar(4)
+  
+  amount          BigInt   // Amount in tokens
+  memo            String?  @db.VarChar(280)
+  isPublic        Boolean  @default(true) @map("is_public")
+  
+  status          String   @default("pending") @db.VarChar(20) // pending, claimed, expired, refunded
+  
+  // When the recipient signs up and claims
+  claimedByUserId String?  @map("claimed_by_user_id")
+  claimedAt       DateTime? @map("claimed_at")
+  
+  // Expiration (e.g., 30 days)
+  expiresAt       DateTime @map("expires_at")
+  
+  // SMS invite tracking
+  inviteSentAt    DateTime? @map("invite_sent_at")
+  inviteCount     Int      @default(0) @map("invite_count")
+  
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  fromUser        User     @relation("SentPendingPayments", fields: [fromUserId], references: [id])
+  claimedByUser   User?    @relation("ClaimedPendingPayments", fields: [claimedByUserId], references: [id])
+
+  @@index([fromUserId])
+  @@index([toPhoneHash])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("pending_payments")
 }
 

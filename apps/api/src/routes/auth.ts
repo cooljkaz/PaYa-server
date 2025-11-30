@@ -197,8 +197,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    // Create user with wallet in transaction
-    const user = await prisma.$transaction(async (tx) => {
+    // Create user with wallet and claim any pending payments in transaction
+    const { user, claimedPayments } = await prisma.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {
           username: username.toLowerCase(),
@@ -209,14 +209,81 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
-      await tx.wallet.create({
-        data: {
-          userId: newUser.id,
-          balance: 0,
+      // Check for pending payments to this phone number
+      const pendingPayments = await tx.pendingPayment.findMany({
+        where: {
+          toPhoneHash: phoneHash,
+          status: 'pending',
+          expiresAt: { gt: new Date() },
+        },
+        include: {
+          fromUser: true,
         },
       });
 
-      return newUser;
+      // Calculate total amount from pending payments
+      const totalPendingAmount = pendingPayments.reduce(
+        (sum, p) => sum + Number(p.amount),
+        0
+      );
+
+      // Create wallet with claimed amount
+      await tx.wallet.create({
+        data: {
+          userId: newUser.id,
+          balance: totalPendingAmount,
+          totalReceived: totalPendingAmount,
+        },
+      });
+
+      // Mark all pending payments as claimed and create transactions
+      for (const pending of pendingPayments) {
+        // Update pending payment status
+        await tx.pendingPayment.update({
+          where: { id: pending.id },
+          data: {
+            status: 'claimed',
+            claimedByUserId: newUser.id,
+            claimedAt: new Date(),
+          },
+        });
+
+        // Create a transaction record for the claimed payment
+        await tx.transaction.create({
+          data: {
+            type: 'payment',
+            status: 'completed',
+            fromUserId: pending.fromUserId,
+            toUserId: newUser.id,
+            amount: pending.amount,
+            feeAmount: 0,
+            memo: pending.memo,
+            isPublic: pending.isPublic,
+            completedAt: new Date(),
+            metadata: {
+              claimedFromPendingPaymentId: pending.id,
+            },
+          },
+        });
+
+        // Update sender's totalSent
+        await tx.wallet.update({
+          where: { userId: pending.fromUserId },
+          data: {
+            totalSent: { increment: pending.amount },
+          },
+        });
+      }
+
+      return { 
+        user: newUser, 
+        claimedPayments: pendingPayments.map(p => ({
+          id: p.id,
+          amount: Number(p.amount),
+          fromUsername: p.fromUser.username,
+          memo: p.memo,
+        })),
+      };
     });
 
     // Create session
@@ -241,7 +308,18 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       username: user.username,
     });
 
-    request.log.info({ userId: user.id, username: user.username }, 'New user registered');
+    // Calculate total claimed amount
+    const totalClaimedAmount = claimedPayments.reduce((sum, p) => sum + p.amount, 0);
+
+    request.log.info(
+      { 
+        userId: user.id, 
+        username: user.username,
+        claimedPayments: claimedPayments.length,
+        claimedAmount: totalClaimedAmount,
+      }, 
+      'New user registered'
+    );
 
     return reply.status(201).send({
       success: true,
@@ -254,11 +332,17 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           createdAt: user.createdAt,
         },
         wallet: {
-          balance: 0,
+          balance: totalClaimedAmount,
         },
         accessToken,
         refreshToken: sessionToken,
         expiresIn: SESSION.ACCESS_TOKEN_EXPIRY_SECONDS,
+        // Include claimed payments info so the app can show a welcome message
+        claimedPayments: claimedPayments.length > 0 ? {
+          count: claimedPayments.length,
+          totalAmount: totalClaimedAmount,
+          payments: claimedPayments,
+        } : null,
       },
     });
   });

@@ -1,6 +1,6 @@
 # PaYa Mobile API Reference
 
-**Base URL:** `http://localhost:3000` (development) | `https://api.paya.app` (production)
+**Base URL:** `http://localhost:3000` (development) | `https://api.paya.cash` (production)
 
 ---
 
@@ -397,6 +397,32 @@ Send tokens to another user.
 
 ## Banking Endpoints
 
+PaYa uses **Plaid** for instant bank account linking and **Synctera** for ACH transfers.
+
+### Bank Linking Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Option 1: Plaid Link (Recommended - Instant Verification)      │
+│  ─────────────────────────────────────────────────────────────  │
+│  1. Call POST /bank/link/create-token → get linkToken           │
+│  2. Open Plaid Link SDK with linkToken                          │
+│  3. User logs into their bank                                   │
+│  4. Plaid returns publicToken + accountId                       │
+│  5. Call POST /bank/link/exchange with publicToken              │
+│  6. Account is INSTANTLY VERIFIED ✓                             │
+│                                                                 │
+│  Option 2: Manual Entry (Fallback - 3-5 days)                   │
+│  ─────────────────────────────────────────────────────────────  │
+│  1. Call POST /bank/link/manual with routing/account numbers    │
+│  2. Synctera sends micro-deposits (3-5 business days)           │
+│  3. User verifies amounts via POST /bank/verify-micro-deposits  │
+│  4. Account is verified ✓                                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ### GET `/bank/accounts` 🔒
 List linked bank accounts.
 
@@ -419,6 +445,13 @@ List linked bank accounts.
 }
 ```
 
+**Bank Account Status:**
+- `pending` - Just created
+- `verification_pending` - Awaiting micro-deposit verification
+- `verified` - Ready for transfers
+- `failed` - Verification failed
+- `removed` - Deleted by user
+
 ---
 
 ### POST `/bank/link/create-token` 🔒
@@ -435,7 +468,31 @@ Get Plaid Link token to connect a bank account.
 }
 ```
 
-**Usage:** Pass this token to Plaid Link SDK in your mobile app.
+**Mobile Integration:**
+```typescript
+// React Native with react-native-plaid-link-sdk
+import { PlaidLink } from 'react-native-plaid-link-sdk';
+
+// 1. Get link token from your API
+const { linkToken } = await api.post('/bank/link/create-token');
+
+// 2. Open Plaid Link
+<PlaidLink
+  tokenConfig={{ token: linkToken }}
+  onSuccess={async (success) => {
+    // 3. Exchange token with your API
+    await api.post('/bank/link/exchange', {
+      publicToken: success.publicToken,
+      accountId: success.metadata.accounts[0].id,
+    });
+  }}
+  onExit={(exit) => {
+    console.log('User exited Plaid Link');
+  }}
+>
+  <Text>Link Bank Account</Text>
+</PlaidLink>
+```
 
 ---
 
@@ -458,10 +515,80 @@ Exchange Plaid public token after user completes Link flow.
     "id": "uuid",
     "institutionName": "Chase",
     "accountMask": "1234",
-    "status": "verified"
+    "accountType": "checking",
+    "status": "verified",
+    "message": "Bank account linked successfully!"
   }
 }
 ```
+
+**Errors:**
+- `BANK_LINK_FAILED` - Plaid exchange failed
+- `VALIDATION_ERROR` - Invalid publicToken or accountId
+
+---
+
+### POST `/bank/link/manual` 🔒
+Manually link a bank account (requires micro-deposit verification).
+
+**Request:**
+```json
+{
+  "accountOwnerName": "John Doe",
+  "routingNumber": "021000021",
+  "accountNumber": "123456789",
+  "accountType": "CHECKING",
+  "institutionName": "Chase"
+}
+```
+
+**Validation:**
+- `routingNumber`: Exactly 9 digits
+- `accountNumber`: 4-17 digits
+- `accountType`: `"CHECKING"` or `"SAVINGS"`
+
+**Response (201):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "uuid",
+    "institutionName": "Chase",
+    "accountMask": "6789",
+    "status": "verification_pending",
+    "message": "Bank account added. Please verify with micro-deposits (3-5 business days)."
+  }
+}
+```
+
+---
+
+### POST `/bank/verify-micro-deposits` 🔒
+Verify micro-deposit amounts to complete manual bank linking.
+
+**Request:**
+```json
+{
+  "bankAccountId": "uuid",
+  "amounts": [32, 45]
+}
+```
+
+**Note:** Amounts are in cents (e.g., `[32, 45]` = $0.32 and $0.45)
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "message": "Bank account verified successfully"
+  }
+}
+```
+
+**Errors:**
+- `NOT_FOUND` - Bank account not found or not pending
+- `VERIFICATION_FAILED` - Incorrect amounts
 
 ---
 
@@ -497,10 +624,16 @@ Load money from bank to wallet (ACH pull).
 }
 ```
 
+**Status Flow:**
+1. `pending` - ACH initiated
+2. `processing` - Bank processing
+3. `completed` - Funds available in wallet
+
 **Errors:**
 - `BANK_NOT_LINKED` - No verified bank account
 - `WEEKLY_LIMIT_EXCEEDED` - Max 2,000 tokens/week
 - `RATE_LIMIT_EXCEEDED` - New accounts limited to 100 tokens first week
+- `TRANSFER_FAILED` - ACH initiation failed
 
 ---
 
@@ -542,6 +675,7 @@ Redeem tokens to bank (ACH push).
 - `BANK_NOT_LINKED` - No verified bank account
 - `INSUFFICIENT_BALANCE` - Not enough tokens
 - `RATE_LIMIT_EXCEEDED` - New accounts can't redeem for 14 days
+- `TRANSFER_FAILED` - ACH initiation failed
 
 ---
 
@@ -692,7 +826,10 @@ All errors follow this format:
 | `DAILY_LIMIT_EXCEEDED` | 429 | Daily limit hit |
 | `WEEKLY_LIMIT_EXCEEDED` | 429 | Weekly limit hit |
 | `BANK_NOT_LINKED` | 400 | No bank connected |
+| `BANK_LINK_FAILED` | 400 | Bank linking failed |
 | `BANK_VERIFICATION_FAILED` | 400 | Bank verify failed |
+| `VERIFICATION_FAILED` | 400 | Micro-deposit verification failed |
+| `TRANSFER_FAILED` | 400 | ACH transfer failed |
 | `VALIDATION_ERROR` | 400 | Request validation failed |
 | `INTERNAL_ERROR` | 500 | Server error |
 | `NOT_FOUND` | 404 | Resource not found |
@@ -779,20 +916,61 @@ curl -X POST http://localhost:3000/dev/login/alice
 ## Mobile App Checklist
 
 ### Required Integrations
-- [ ] Plaid Link SDK (for bank account linking)
-- [ ] Secure token storage (Keychain / EncryptedSharedPreferences)
-- [ ] Push notifications (for payment received alerts)
-- [ ] Biometric auth (optional, for app unlock)
+- [ ] **Plaid Link SDK** - `react-native-plaid-link-sdk` for bank linking
+- [ ] **Secure Storage** - `expo-secure-store` for tokens
+- [ ] **Push Notifications** - FCM for payment alerts
+- [ ] **Biometric Auth** - `expo-local-authentication` (optional)
+- [ ] **QR Code** - `react-native-qrcode-svg` for receive screen
+- [ ] **Haptics** - `expo-haptics` for feedback
 
 ### Key Screens
-1. **Onboarding** - Phone entry → OTP → Username selection
-2. **Home** - Balance, recent activity, quick send
-3. **Send** - Username search, amount, memo
-4. **Activity** - Transaction history
-5. **Public Feed** - Live payment stream
-6. **Bank** - Link account, load/redeem
-7. **Profile** - Settings, linked accounts
-8. **Transparency** - Reserve data, weekly rewards
+
+#### Onboarding Flow
+1. **PhoneScreen** - Phone number entry
+2. **OTPScreen** - 6-digit code verification
+3. **UsernameScreen** - Choose username
+4. **BankLinkScreen** - Link bank (optional, can skip)
+
+#### Main App
+5. **FeedScreen (Home)** - Balance, stats, public feed
+6. **PayScreen** - Search user, enter amount, send
+7. **ReceiveScreen** - QR code, share username
+8. **ActivityScreen** - Transaction history
+9. **ProfileScreen** - Settings, bank accounts, logout
+
+#### Banking Screens
+10. **BankAccountsScreen** - List linked accounts
+11. **LinkBankScreen** - Plaid Link flow
+12. **ManualLinkScreen** - Manual routing/account entry
+13. **VerifyMicroDepositsScreen** - Enter deposit amounts
+14. **LoadMoneyScreen** - Add funds from bank
+15. **RedeemScreen** - Withdraw to bank
+
+### Navigation Structure
+
+```
+RootNavigator
+├── AuthNavigator (not authenticated)
+│   ├── PhoneScreen
+│   ├── OTPScreen
+│   ├── UsernameScreen
+│   └── BankLinkScreen (optional onboarding step)
+│
+└── MainNavigator (authenticated)
+    ├── MainTabs
+    │   ├── Feed (Home)
+    │   ├── [Center Button] → Pay/Receive Modal
+    │   └── Profile
+    │
+    └── Modal Screens
+        ├── PayScreen
+        ├── ReceiveScreen
+        ├── ActivityScreen
+        ├── BankAccountsScreen
+        ├── LinkBankScreen
+        ├── LoadMoneyScreen
+        └── RedeemScreen
+```
 
 ---
 

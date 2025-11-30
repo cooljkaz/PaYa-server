@@ -1,5 +1,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import { prisma } from '../lib/prisma.js';
+import { synctera, SyncteraError } from '../lib/synctera.js';
+import { plaid, PlaidError } from '../lib/plaid.js';
 import { 
   loadMoneySchema, 
   redeemMoneySchema,
@@ -13,6 +15,25 @@ import {
 } from '@paya/shared';
 import { checkRateLimit } from '../lib/redis.js';
 import { generateIdempotencyKey, isNewAccount, getWeekNumber } from '../lib/utils.js';
+
+// Input types
+interface PlaidExchangeInput {
+  publicToken: string;
+  accountId: string; // Selected account from Plaid Link
+}
+
+interface ManualLinkInput {
+  accountOwnerName: string;
+  routingNumber: string;
+  accountNumber: string;
+  accountType: 'CHECKING' | 'SAVINGS';
+  institutionName?: string;
+}
+
+interface VerifyMicroDepositsInput {
+  bankAccountId: string;
+  amounts: [number, number]; // Two micro-deposit amounts in cents
+}
 
 export const bankRoutes: FastifyPluginAsync = async (app) => {
   // All routes require authentication
@@ -47,78 +68,22 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
+  // ==================== PLAID LINK FLOW (Recommended) ====================
+
   /**
    * POST /bank/link/create-token
-   * Create a Plaid Link token for connecting a bank account
+   * Create a Plaid Link token for the mobile app
    */
   app.post('/link/create-token', async (request, reply) => {
-    // TODO: Integrate with Plaid
-    // For now, return a mock token for development
-
-    if (process.env.NODE_ENV === 'development') {
-      return {
-        success: true,
-        data: {
-          linkToken: 'link-sandbox-mock-token',
-          expiration: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        },
-      };
-    }
-
-    // Production: Call Plaid API
-    // const plaidClient = getPlaidClient();
-    // const response = await plaidClient.linkTokenCreate({
-    //   user: { client_user_id: request.userId },
-    //   client_name: 'PaYa',
-    //   products: ['auth'],
-    //   country_codes: ['US'],
-    //   language: 'en',
-    // });
-
-    return reply.status(501).send({
-      success: false,
-      error: {
-        code: ERROR_CODES.INTERNAL_ERROR,
-        message: 'Plaid integration not configured',
-      },
-    });
-  });
-
-  /**
-   * POST /bank/link/exchange
-   * Exchange Plaid public token for access token and create bank account
-   */
-  app.post<{ Body: { publicToken: string; accountId: string } }>(
-    '/link/exchange',
-    async (request, reply) => {
-      const { publicToken, accountId } = request.body;
-
-      // TODO: Integrate with Plaid
-      // For development, create a mock bank account
-
+    // Check if Plaid is configured
+    if (!plaid.isConfigured()) {
+      // Development mode - return mock token
       if (process.env.NODE_ENV === 'development') {
-        const bankAccount = await prisma.bankAccount.create({
-          data: {
-            userId: request.userId,
-            plaidAccessToken: 'mock-access-token',
-            plaidAccountId: accountId || 'mock-account-id',
-            plaidItemId: 'mock-item-id',
-            institutionName: 'Mock Bank',
-            accountName: 'Checking Account',
-            accountMask: '1234',
-            accountType: 'checking',
-            status: 'verified',
-            verifiedAt: new Date(),
-          },
-        });
-
         return {
           success: true,
           data: {
-            id: bankAccount.id,
-            institutionName: bankAccount.institutionName,
-            accountMask: bankAccount.accountMask,
-            status: bankAccount.status,
+            linkToken: 'link-sandbox-mock-token',
+            expiration: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
           },
         };
       }
@@ -127,11 +92,445 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
         success: false,
         error: {
           code: ERROR_CODES.INTERNAL_ERROR,
-          message: 'Plaid integration not configured',
+          message: 'Bank linking service not configured',
         },
       });
     }
-  );
+
+    try {
+      const linkToken = await plaid.createLinkToken(request.userId);
+
+      return {
+        success: true,
+        data: {
+          linkToken: linkToken.linkToken,
+          expiration: linkToken.expiration,
+        },
+      };
+    } catch (error) {
+      if (error instanceof PlaidError) {
+        request.log.error({ error: error.message, code: error.code }, 'Plaid error');
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.BANK_LINK_FAILED,
+            message: error.message,
+          },
+        });
+      }
+      throw error;
+    }
+  });
+
+  /**
+   * POST /bank/link/exchange
+   * Exchange Plaid public token and create bank account in Synctera
+   */
+  app.post<{ Body: PlaidExchangeInput }>('/link/exchange', async (request, reply) => {
+    const { publicToken, accountId } = request.body;
+
+    if (!publicToken || !accountId) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'publicToken and accountId are required',
+        },
+      });
+    }
+
+    // Development mode - create mock account
+    if (!plaid.isConfigured() && process.env.NODE_ENV === 'development') {
+      const bankAccount = await prisma.bankAccount.create({
+        data: {
+          userId: request.userId,
+          plaidAccessToken: 'mock-access-token',
+          plaidAccountId: accountId,
+          plaidItemId: 'mock-item-id',
+          routingNumber: '110000000',
+          accountNumberLast4: '1234',
+          institutionName: 'Mock Bank',
+          accountName: 'Checking Account',
+          accountMask: '1234',
+          accountType: 'checking',
+          status: 'verified',
+          verifiedAt: new Date(),
+        },
+      });
+
+      return {
+        success: true,
+        data: {
+          id: bankAccount.id,
+          institutionName: bankAccount.institutionName,
+          accountMask: bankAccount.accountMask,
+          accountType: bankAccount.accountType,
+          status: bankAccount.status,
+          message: 'Bank account linked successfully (development mode)',
+        },
+      };
+    }
+
+    try {
+      // Exchange public token and get account details from Plaid
+      const plaidResult = await plaid.exchangePublicToken(publicToken);
+      
+      // Find the selected account
+      const selectedAccount = plaidResult.accounts.find(a => a.accountId === accountId);
+      if (!selectedAccount) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Selected account not found',
+          },
+        });
+      }
+
+      // Only allow checking/savings accounts
+      if (!['depository'].includes(selectedAccount.accountType)) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Only checking and savings accounts are supported',
+          },
+        });
+      }
+
+      // Get user for Synctera customer creation
+      const user = await prisma.user.findUnique({
+        where: { id: request.userId },
+      });
+
+      if (!user) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.USER_NOT_FOUND,
+            message: 'User not found',
+          },
+        });
+      }
+
+      let syncteraExternalAccountId: string | null = null;
+
+      // If Synctera is configured, create external account there for ACH
+      if (synctera.isConfigured()) {
+        try {
+          // Ensure user has Synctera customer
+          let syncteraCustomerId = user.syncteraCustomerId;
+          if (!syncteraCustomerId) {
+            const customer = await synctera.createCustomer({
+              first_name: user.username,
+              last_name: 'User',
+              phone_number: `+1${user.phoneLastFour}000000`,
+            });
+            syncteraCustomerId = customer.id;
+            await prisma.user.update({
+              where: { id: request.userId },
+              data: { syncteraCustomerId },
+            });
+          }
+
+          // Create external account in Synctera using Plaid data
+          const externalAccount = await synctera.createExternalAccount({
+            customer_id: syncteraCustomerId,
+            account_owner_names: [selectedAccount.accountName],
+            routing_number: selectedAccount.routingNumber,
+            account_number: selectedAccount.accountNumber,
+            account_type: selectedAccount.accountSubtype === 'savings' ? 'SAVINGS' : 'CHECKING',
+          });
+
+          syncteraExternalAccountId = externalAccount.id;
+        } catch (syncError) {
+          request.log.error({ error: syncError }, 'Failed to create Synctera external account');
+          // Continue without Synctera - we still have the Plaid data
+        }
+      }
+
+      // Create bank account record
+      const bankAccount = await prisma.bankAccount.create({
+        data: {
+          userId: request.userId,
+          plaidAccessToken: plaidResult.accessToken,
+          plaidAccountId: accountId,
+          plaidItemId: plaidResult.itemId,
+          syncteraExternalAccountId,
+          routingNumber: selectedAccount.routingNumber,
+          accountNumberLast4: selectedAccount.accountNumber.slice(-4),
+          institutionName: plaidResult.institution?.name || 'Bank',
+          accountName: selectedAccount.accountName,
+          accountMask: selectedAccount.accountMask,
+          accountType: selectedAccount.accountSubtype === 'savings' ? 'savings' : 'checking',
+          // Plaid-linked accounts are instantly verified!
+          status: 'verified',
+          verifiedAt: new Date(),
+        },
+      });
+
+      request.log.info({ 
+        bankAccountId: bankAccount.id, 
+        institution: plaidResult.institution?.name 
+      }, 'Bank account linked via Plaid');
+
+      return {
+        success: true,
+        data: {
+          id: bankAccount.id,
+          institutionName: bankAccount.institutionName,
+          accountMask: bankAccount.accountMask,
+          accountType: bankAccount.accountType,
+          status: bankAccount.status,
+          message: 'Bank account linked successfully!',
+        },
+      };
+    } catch (error) {
+      if (error instanceof PlaidError) {
+        request.log.error({ error: error.message, code: error.code }, 'Plaid exchange failed');
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.BANK_LINK_FAILED,
+            message: error.message,
+          },
+        });
+      }
+      throw error;
+    }
+  });
+
+  // ==================== MANUAL LINK FLOW (Fallback) ====================
+
+  /**
+   * POST /bank/link/manual
+   * Manually link a bank account (requires micro-deposit verification)
+   */
+  app.post<{ Body: ManualLinkInput }>('/link/manual', async (request, reply) => {
+    const { accountOwnerName, routingNumber, accountNumber, accountType, institutionName } = request.body;
+
+    // Validate input
+    if (!routingNumber || routingNumber.length !== 9) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'Invalid routing number. Must be 9 digits.',
+        },
+      });
+    }
+
+    if (!accountNumber || accountNumber.length < 4) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: 'Invalid account number.',
+        },
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: request.userId },
+    });
+
+    if (!user) {
+      return reply.status(404).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.USER_NOT_FOUND,
+          message: 'User not found',
+        },
+      });
+    }
+
+    // Development mode - auto-verify
+    if (!synctera.isConfigured() && process.env.NODE_ENV === 'development') {
+      const bankAccount = await prisma.bankAccount.create({
+        data: {
+          userId: request.userId,
+          routingNumber,
+          accountNumberLast4: accountNumber.slice(-4),
+          institutionName: institutionName || 'Bank',
+          accountName: `${accountType} Account`,
+          accountMask: accountNumber.slice(-4),
+          accountType: accountType.toLowerCase(),
+          status: 'verified',
+          verifiedAt: new Date(),
+        },
+      });
+
+      return reply.status(201).send({
+        success: true,
+        data: {
+          id: bankAccount.id,
+          institutionName: bankAccount.institutionName,
+          accountMask: bankAccount.accountMask,
+          status: bankAccount.status,
+          message: 'Bank account linked (development mode)',
+        },
+      });
+    }
+
+    try {
+      // Ensure user has Synctera customer
+      let syncteraCustomerId = user.syncteraCustomerId;
+      if (!syncteraCustomerId && synctera.isConfigured()) {
+        const customer = await synctera.createCustomer({
+          first_name: accountOwnerName.split(' ')[0] || 'User',
+          last_name: accountOwnerName.split(' ').slice(1).join(' ') || user.username,
+          phone_number: `+1${user.phoneLastFour}000000`,
+        });
+        syncteraCustomerId = customer.id;
+        await prisma.user.update({
+          where: { id: request.userId },
+          data: { syncteraCustomerId },
+        });
+      }
+
+      let syncteraExternalAccountId: string | null = null;
+
+      if (synctera.isConfigured() && syncteraCustomerId) {
+        // Create external account in Synctera
+        const externalAccount = await synctera.createExternalAccount({
+          customer_id: syncteraCustomerId,
+          account_owner_names: [accountOwnerName],
+          routing_number: routingNumber,
+          account_number: accountNumber,
+          account_type: accountType,
+        });
+
+        syncteraExternalAccountId = externalAccount.id;
+
+        // Initiate micro-deposit verification
+        await synctera.initiateMicroDeposits(externalAccount.id);
+      }
+
+      // Create bank account record
+      const bankAccount = await prisma.bankAccount.create({
+        data: {
+          userId: request.userId,
+          syncteraExternalAccountId,
+          routingNumber,
+          accountNumberLast4: accountNumber.slice(-4),
+          institutionName: institutionName || 'Bank',
+          accountName: `${accountType} Account`,
+          accountMask: accountNumber.slice(-4),
+          accountType: accountType.toLowerCase(),
+          status: 'verification_pending',
+        },
+      });
+
+      request.log.info({ bankAccountId: bankAccount.id }, 'Manual bank account created, pending verification');
+
+      return reply.status(201).send({
+        success: true,
+        data: {
+          id: bankAccount.id,
+          institutionName: bankAccount.institutionName,
+          accountMask: bankAccount.accountMask,
+          status: bankAccount.status,
+          message: 'Bank account added. Please verify with micro-deposits (3-5 business days).',
+        },
+      });
+    } catch (error) {
+      if (error instanceof SyncteraError) {
+        request.log.error({ error: error.message }, 'Synctera error');
+        return reply.status(error.statusCode).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.BANK_LINK_FAILED,
+            message: error.message,
+          },
+        });
+      }
+      throw error;
+    }
+  });
+
+  /**
+   * POST /bank/verify-micro-deposits
+   * Verify micro-deposits to complete manual bank account verification
+   */
+  app.post<{ Body: VerifyMicroDepositsInput }>('/verify-micro-deposits', async (request, reply) => {
+    const { bankAccountId, amounts } = request.body;
+
+    const bankAccount = await prisma.bankAccount.findFirst({
+      where: {
+        id: bankAccountId,
+        userId: request.userId,
+        status: 'verification_pending',
+      },
+    });
+
+    if (!bankAccount) {
+      return reply.status(404).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.NOT_FOUND,
+          message: 'Bank account not found or not pending verification',
+        },
+      });
+    }
+
+    // Development mode
+    if (!synctera.isConfigured() && process.env.NODE_ENV === 'development') {
+      await prisma.bankAccount.update({
+        where: { id: bankAccountId },
+        data: {
+          status: 'verified',
+          verifiedAt: new Date(),
+        },
+      });
+
+      return {
+        success: true,
+        data: { message: 'Bank account verified (development mode)' },
+      };
+    }
+
+    if (!bankAccount.syncteraExternalAccountId) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_ERROR,
+          message: 'Bank account missing verification reference',
+        },
+      });
+    }
+
+    try {
+      await synctera.verifyMicroDeposits(bankAccount.syncteraExternalAccountId, amounts);
+
+      await prisma.bankAccount.update({
+        where: { id: bankAccountId },
+        data: {
+          status: 'verified',
+          verifiedAt: new Date(),
+        },
+      });
+
+      request.log.info({ bankAccountId }, 'Bank account verified via micro-deposits');
+
+      return {
+        success: true,
+        data: { message: 'Bank account verified successfully' },
+      };
+    } catch (error) {
+      if (error instanceof SyncteraError) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VERIFICATION_FAILED,
+            message: 'Micro-deposit amounts incorrect. Please try again.',
+          },
+        });
+      }
+      throw error;
+    }
+  });
+
+  // ==================== MONEY MOVEMENT ====================
 
   /**
    * POST /bank/load
@@ -159,12 +558,22 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    // Check new account restrictions
     const user = await prisma.user.findUnique({
       where: { id: request.userId },
     });
 
-    if (user && isNewAccount(user.createdAt, NEW_ACCOUNT.COOLING_PERIOD_DAYS)) {
+    if (!user) {
+      return reply.status(404).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.USER_NOT_FOUND,
+          message: 'User not found',
+        },
+      });
+    }
+
+    // Check new account restrictions
+    if (isNewAccount(user.createdAt, NEW_ACCOUNT.COOLING_PERIOD_DAYS)) {
       if (amount > NEW_ACCOUNT.FIRST_WEEK_MAX_LOAD) {
         return reply.status(400).send({
           success: false,
@@ -192,10 +601,41 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
 
     const key = idempotencyKey || generateIdempotencyKey();
 
-    // Create pending transaction
-    // In production, this would initiate an ACH pull via Dwolla
+    // Initiate ACH transfer
+    let externalTransactionId: string | null = null;
+    let transactionStatus: 'pending' | 'completed' = 'pending';
+
+    if (synctera.isConfigured() && bankAccount.syncteraExternalAccountId && user.syncteraAccountId) {
+      try {
+        const achTransfer = await synctera.initiateACHPull({
+          amount: amount * 100, // Convert to cents
+          originating_account_id: bankAccount.syncteraExternalAccountId,
+          receiving_account_id: user.syncteraAccountId,
+          memo: `PaYa load - ${key}`,
+        });
+
+        externalTransactionId = achTransfer.id;
+        request.log.info({ achId: achTransfer.id, amount }, 'ACH pull initiated');
+      } catch (error) {
+        if (error instanceof SyncteraError) {
+          request.log.error({ error: error.message }, 'ACH pull failed');
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.TRANSFER_FAILED,
+              message: 'Failed to initiate bank transfer. Please try again.',
+            },
+          });
+        }
+        throw error;
+      }
+    } else if (process.env.NODE_ENV === 'development') {
+      // Development mode - auto-complete
+      transactionStatus = 'completed';
+    }
+
+    // Create transaction record
     const transaction = await prisma.$transaction(async (tx) => {
-      // Check idempotency
       const existing = await tx.transaction.findUnique({
         where: { idempotencyKey: key },
       });
@@ -204,24 +644,20 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
         return existing;
       }
 
-      // For development, auto-complete the load
-      // In production, this would be 'pending' until ACH clears
-      const status = process.env.NODE_ENV === 'development' ? 'completed' : 'pending';
-
       const newTx = await tx.transaction.create({
         data: {
           type: 'load',
-          status,
+          status: transactionStatus,
           toUserId: request.userId,
           amount,
           feeAmount: 0,
           idempotencyKey: key,
-          completedAt: status === 'completed' ? new Date() : null,
+          externalId: externalTransactionId,
+          completedAt: transactionStatus === 'completed' ? new Date() : null,
         },
       });
 
-      // In development, immediately credit wallet
-      if (status === 'completed') {
+      if (transactionStatus === 'completed') {
         await tx.wallet.update({
           where: { userId: request.userId },
           data: {
@@ -266,7 +702,6 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
     const body = redeemMoneySchema.parse(request.body);
     const { amount, idempotencyKey } = body;
 
-    // Check if user has verified bank account
     const bankAccount = await prisma.bankAccount.findFirst({
       where: {
         userId: request.userId,
@@ -284,12 +719,22 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    // Check new account redemption restriction
     const user = await prisma.user.findUnique({
       where: { id: request.userId },
     });
 
-    if (user && isNewAccount(user.createdAt, NEW_ACCOUNT.NO_REDEEM_DAYS)) {
+    if (!user) {
+      return reply.status(404).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.USER_NOT_FOUND,
+          message: 'User not found',
+        },
+      });
+    }
+
+    // Check new account redemption restriction
+    if (isNewAccount(user.createdAt, NEW_ACCOUNT.NO_REDEEM_DAYS)) {
       return reply.status(400).send({
         success: false,
         error: {
@@ -300,8 +745,6 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
     }
 
     // Calculate fee
-    // First 100 tokens/week = free, above = $3 flat fee
-    const weekNumber = getWeekNumber();
     const weeklyRedemptions = await prisma.transaction.aggregate({
       where: {
         fromUserId: request.userId,
@@ -316,7 +759,7 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
     const remainingFree = Math.max(0, FREE_REDEMPTION_LIMIT - weeklyTotal);
     const feeAmount = amount > remainingFree ? OVER_LIMIT_REDEMPTION_FEE_CENTS / 100 : 0;
 
-    // Check balance (including fee)
+    // Check balance
     const wallet = await prisma.wallet.findUnique({
       where: { userId: request.userId },
     });
@@ -333,8 +776,39 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
 
     const key = idempotencyKey || generateIdempotencyKey();
 
+    // Initiate ACH push
+    let externalTransactionId: string | null = null;
+    let transactionStatus: 'pending' | 'completed' = 'pending';
+
+    if (synctera.isConfigured() && bankAccount.syncteraExternalAccountId && user.syncteraAccountId) {
+      try {
+        const achTransfer = await synctera.initiateACHPush({
+          amount: amount * 100,
+          originating_account_id: user.syncteraAccountId,
+          receiving_account_id: bankAccount.syncteraExternalAccountId,
+          memo: `PaYa redemption - ${key}`,
+        });
+
+        externalTransactionId = achTransfer.id;
+        request.log.info({ achId: achTransfer.id, amount }, 'ACH push initiated');
+      } catch (error) {
+        if (error instanceof SyncteraError) {
+          request.log.error({ error: error.message }, 'ACH push failed');
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.TRANSFER_FAILED,
+              message: 'Failed to initiate bank transfer. Please try again.',
+            },
+          });
+        }
+        throw error;
+      }
+    } else if (process.env.NODE_ENV === 'development') {
+      transactionStatus = 'completed';
+    }
+
     const transaction = await prisma.$transaction(async (tx) => {
-      // Check idempotency
       const existing = await tx.transaction.findUnique({
         where: { idempotencyKey: key },
       });
@@ -343,23 +817,19 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
         return existing;
       }
 
-      // For development, auto-complete
-      // In production, this would be 'pending' until ACH push initiates
-      const status = process.env.NODE_ENV === 'development' ? 'completed' : 'pending';
-
       const newTx = await tx.transaction.create({
         data: {
           type: 'redemption',
-          status,
+          status: transactionStatus,
           fromUserId: request.userId,
           amount,
           feeAmount,
           idempotencyKey: key,
-          completedAt: status === 'completed' ? new Date() : null,
+          externalId: externalTransactionId,
+          completedAt: transactionStatus === 'completed' ? new Date() : null,
         },
       });
 
-      // Debit wallet
       await tx.wallet.update({
         where: { userId: request.userId },
         data: {
@@ -368,7 +838,6 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
-      // If there's a fee, record it as revenue
       if (feeAmount > 0) {
         await tx.transaction.create({
           data: {
@@ -435,6 +904,11 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    // Remove from Plaid if linked
+    if (account.plaidAccessToken && plaid.isConfigured()) {
+      await plaid.removeItem(account.plaidAccessToken);
+    }
+
     await prisma.bankAccount.update({
       where: { id },
       data: {
@@ -459,4 +933,3 @@ function getWeekStart(): Date {
   start.setHours(0, 0, 0, 0);
   return start;
 }
-

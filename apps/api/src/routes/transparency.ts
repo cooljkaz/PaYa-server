@@ -97,6 +97,11 @@ interface TransparencyData {
     totalTokens: number;
     isFullyBacked: boolean;
   };
+  rewardsPool: {
+    currentBalance: number; // Current accumulated fees (in dollars)
+    activeUsers: number;    // Users eligible for this week
+    estimatedReward: number; // Estimated per-user reward (floored)
+  };
   lastWeek: {
     weekNumber: number;
     totalRevenue: number;
@@ -124,10 +129,37 @@ async function calculateTransparencyData(): Promise<TransparencyData> {
     _sum: { balance: true },
   });
 
-  // Get last completed weekly cycle
+  // Get current week number
+  const now = new Date();
+  const startOfYear = new Date(now.getFullYear(), 0, 1);
+  const weekNumber = Math.ceil(
+    ((now.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getDay() + 1) / 7
+  );
+  const currentWeekNumber = now.getFullYear() * 100 + weekNumber;
+
+  // Get current week's cycle (open or calculating)
+  const currentCycle = await prisma.weeklyCycle.findFirst({
+    where: { 
+      weekNumber: currentWeekNumber,
+      status: { in: ['open', 'calculating', 'distributed'] },
+    },
+  });
+
+  // Get last completed weekly cycle (for history)
   const lastCycle = await prisma.weeklyCycle.findFirst({
     where: { status: { in: ['distributed', 'finalized'] } },
     orderBy: { weekNumber: 'desc' },
+  });
+
+  // Count active users this week (users with public payments)
+  const activeUsersThisWeek = await prisma.weeklyActivity.count({
+    where: {
+      weekNumber: currentWeekNumber,
+      OR: [
+        { publicPaymentsSent: { gt: 0 } },
+        { publicPaymentsReceived: { gt: 0 } },
+      ],
+    },
   });
 
   // Network stats
@@ -142,6 +174,14 @@ async function calculateTransparencyData(): Promise<TransparencyData> {
 
   const totalTokensNum = Number(totalTokens._sum.balance || 0);
 
+  // Calculate current pool balance and estimated reward
+  const currentPoolCents = currentCycle ? Number(currentCycle.userPool) : 0;
+  const currentPoolDollars = currentPoolCents / 100;
+  const activeUsers = activeUsersThisWeek || (currentCycle?.activeUserCount || 0);
+  const estimatedReward = activeUsers > 0 
+    ? Math.floor(currentPoolDollars / activeUsers) 
+    : 0;
+
   return {
     reserve: {
       balanceUsd: latestReserve 
@@ -150,14 +190,19 @@ async function calculateTransparencyData(): Promise<TransparencyData> {
       totalTokens: totalTokensNum,
       isFullyBacked: latestReserve?.isBalanced ?? true,
     },
+    rewardsPool: {
+      currentBalance: currentPoolDollars,
+      activeUsers,
+      estimatedReward,
+    },
     lastWeek: lastCycle
       ? {
           weekNumber: lastCycle.weekNumber,
           totalRevenue: Number(lastCycle.totalRevenue) / 100, // Convert cents to dollars
           opsAllocation: Number(lastCycle.opsAllocation) / 100,
-          userPool: Number(lastCycle.userPool),
+          userPool: Number(lastCycle.userPool) / 100, // Convert cents to dollars
           activeUserCount: lastCycle.activeUserCount,
-          perUserReward: Number(lastCycle.perUserReward),
+          perUserReward: Math.floor(Number(lastCycle.perUserReward) / 100), // Floor to whole dollars
         }
       : null,
     network: {
