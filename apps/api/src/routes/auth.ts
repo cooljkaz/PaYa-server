@@ -440,5 +440,3 @@ declare module 'fastify' {
   }
 }
 
-import { FastifyRequest, FastifyReply } from 'fastify';
-

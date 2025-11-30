@@ -114,10 +114,10 @@ class SyncteraClient {
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     
-    const headers: HeadersInit = {
+    const headers: Record<string, string> = {
       'Authorization': `Bearer ${this.apiKey}`,
       'Content-Type': 'application/json',
-      ...options.headers,
+      ...(options.headers as Record<string, string> || {}),
     };
 
     try {
@@ -126,18 +126,19 @@ class SyncteraClient {
         headers,
       });
 
-      const data = await response.json();
+      const data = await response.json() as unknown;
 
       if (!response.ok) {
+        const errorData = data as { message?: string; code?: string };
         logger.error({ 
           endpoint, 
           status: response.status, 
           error: data 
         }, 'Synctera API error');
         throw new SyncteraError(
-          data.message || 'Synctera API error',
+          errorData.message || 'Synctera API error',
           response.status,
-          data.code
+          errorData.code
         );
       }
 

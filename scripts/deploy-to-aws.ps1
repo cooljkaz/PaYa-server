@@ -19,7 +19,7 @@ Write-Host "🚀 Deploying PaYa API to AWS ($Environment)" -ForegroundColor Cyan
 $prereqs = @{
     "AWS CLI" = "aws"
     "Docker" = "docker"
-    "AWS CDK" = "cdk"
+    "pnpm" = "pnpm"
 }
 
 foreach ($name in $prereqs.Keys) {
@@ -53,7 +53,7 @@ try {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Infrastructure not found. Deploying..." -ForegroundColor Yellow
         pnpm install
-        cdk bootstrap
+        pnpm cdk bootstrap
         if ($Environment -eq "staging") {
             pnpm deploy:staging
         } else {
@@ -68,14 +68,15 @@ try {
 
 # Step 2: Get ECR repository
 Write-Host "`nStep 2: Getting ECR repository..." -ForegroundColor Yellow
-$ECRRepo = aws cloudformation describe-stacks `
-    --stack-name $StackName `
+$ECRRepo = aws ecr describe-repositories `
     --region $Region `
-    --query "Stacks[0].Outputs[?OutputKey=='ECRRepositoryURI'].OutputValue" `
+    --repository-names "paya-$Environment" `
+    --query 'repositories[0].repositoryUri' `
     --output text
 
 if (-not $ECRRepo) {
-    Write-Host "❌ Error: Could not find ECR repository" -ForegroundColor Red
+    Write-Host "❌ Error: Could not find ECR repository paya-$Environment" -ForegroundColor Red
+    Write-Host "Create it with: aws ecr create-repository --repository-name paya-$Environment --region $Region" -ForegroundColor Yellow
     exit 1
 }
 Write-Host "✓ ECR Repository: $ECRRepo" -ForegroundColor Green
@@ -97,18 +98,27 @@ Write-Host "✓ Image pushed successfully" -ForegroundColor Green
 
 # Step 6: Get cluster and service
 Write-Host "`nStep 6: Updating ECS service..." -ForegroundColor Yellow
-$ClusterName = aws cloudformation describe-stacks `
-    --stack-name $StackName `
+# Get cluster ARN from ECS (not CloudFormation outputs)
+$ClusterArn = aws ecs list-clusters `
     --region $Region `
-    --query "Stacks[0].Resources[?ResourceType=='AWS::ECS::Cluster'].PhysicalResourceId" `
-    --output text
+    --query "clusterArns[?contains(@, 'PaYa') && contains(@, '$($Environment.Substring(0,1).ToUpper() + $Environment.Substring(1))')]" `
+    --output text | Select-Object -First 1
 
-if (-not $ClusterName) {
-    # Try alternative method
-    $ClusterName = (aws ecs list-clusters --region $Region --query "clusterArns[?contains(@, 'PaYa')]" --output text | Select-Object -First 1) -replace ".*/", ""
+if (-not $ClusterArn) {
+    Write-Host "❌ Error: Could not find ECS cluster" -ForegroundColor Red
+    exit 1
 }
 
+$ClusterName = $ClusterArn -replace ".*/", ""
+Write-Host "✓ Cluster: $ClusterName" -ForegroundColor Green
+
 $ServiceName = (aws ecs list-services --cluster $ClusterName --region $Region --query 'serviceArns[0]' --output text) -replace ".*/", ""
+
+if (-not $ServiceName) {
+    Write-Host "❌ Error: Could not find ECS service" -ForegroundColor Red
+    exit 1
+}
+Write-Host "✓ Service: $ServiceName" -ForegroundColor Green
 
 # Step 7: Force new deployment
 Write-Host "`nStep 7: Triggering new deployment..." -ForegroundColor Yellow

@@ -8,6 +8,7 @@ import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { readFileSync } from 'fs';
 
 import { loggerConfig } from './lib/logger.js';
 import { prisma } from './lib/prisma.js';
@@ -71,14 +72,12 @@ export async function buildApp() {
   // WebSocket (for real-time feed)
   await app.register(websocket);
 
-  // Static files (dev dashboard)
-  if (process.env.NODE_ENV !== 'production') {
-    const __dirname = path.dirname(fileURLToPath(import.meta.url));
-    await app.register(fastifyStatic, {
-      root: path.join(__dirname, '..', 'public'),
-      prefix: '/dashboard/',
-    });
-  }
+  // Static files (assets only, not dashboard)
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  await app.register(fastifyStatic, {
+    root: path.join(__dirname, '..', 'public'),
+    prefix: '/public/assets/',
+  });
 
   // -------------------- Decorators --------------------
 
@@ -97,11 +96,19 @@ export async function buildApp() {
   });
 
   // Error handler
-  app.setErrorHandler((error, request, reply) => {
+  app.setErrorHandler((error: unknown, request, reply) => {
     request.log.error(error);
 
+    // Type guard for error objects
+    const err = error as Error & { 
+      name?: string; 
+      code?: string; 
+      statusCode?: number;
+      message?: string;
+    };
+
     // Zod validation errors
-    if (error.name === 'ZodError') {
+    if (err.name === 'ZodError') {
       return reply.status(400).send({
         success: false,
         error: {
@@ -113,7 +120,7 @@ export async function buildApp() {
     }
 
     // JWT errors
-    if (error.name === 'UnauthorizedError' || error.code === 'FST_JWT_NO_AUTHORIZATION_IN_HEADER') {
+    if (err.name === 'UnauthorizedError' || err.code === 'FST_JWT_NO_AUTHORIZATION_IN_HEADER') {
       return reply.status(401).send({
         success: false,
         error: {
@@ -124,14 +131,14 @@ export async function buildApp() {
     }
 
     // Default error
-    const statusCode = error.statusCode || 500;
+    const statusCode = err.statusCode || 500;
     return reply.status(statusCode).send({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
         message: process.env.NODE_ENV === 'production' 
           ? 'An unexpected error occurred' 
-          : error.message,
+          : err.message || 'Unknown error',
       },
     });
   });
@@ -149,6 +156,89 @@ export async function buildApp() {
   await app.register(adminRoutes, { prefix: '/admin' });
   await app.register(devRoutes, { prefix: '/dev' });
   await app.register(webhookRoutes, { prefix: '/webhooks' });
+
+  // Dashboard login endpoint (sets cookie)
+  app.post('/public/dashboard/login', async (request, reply) => {
+    try {
+      const body = request.body as { token?: string };
+      if (!body.token) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: 'Token required' },
+        });
+      }
+
+      // Verify token is valid
+      try {
+        await app.jwt.verify<{ userId: string; username: string }>(body.token);
+        
+        // Set cookie with token (15 min expiry, same as JWT)
+        reply.setCookie('paya_dashboard_token', body.token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          maxAge: 15 * 60, // 15 minutes
+          path: '/',
+        });
+
+        return {
+          success: true,
+          data: { message: 'Logged in successfully' },
+        };
+      } catch (err) {
+        return reply.status(401).send({
+          success: false,
+          error: { message: 'Invalid token' },
+        });
+      }
+    } catch (err) {
+      return reply.status(400).send({
+        success: false,
+        error: { message: 'Invalid request' },
+      });
+    }
+  });
+
+  // Protected dashboard route - checks for JWT in cookie
+  app.get('/public/dashboard.html', async (request, reply) => {
+    // Check for token in cookie
+    const token = request.cookies['paya_dashboard_token'];
+
+    if (!token) {
+      // No token - return HTML with login prompt
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      const dashboardPath = path.join(__dirname, '..', 'public', 'dashboard.html');
+      const dashboardHtml = readFileSync(dashboardPath, 'utf-8');
+      
+      reply.type('text/html').status(401);
+      return dashboardHtml;
+    }
+
+    // Verify token
+    try {
+      // Temporarily set token in header for jwtVerify
+      request.headers.authorization = `Bearer ${token}`;
+      await request.jwtVerify();
+      
+      // Token is valid - serve dashboard
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      const dashboardPath = path.join(__dirname, '..', 'public', 'dashboard.html');
+      const dashboardHtml = readFileSync(dashboardPath, 'utf-8');
+      
+      reply.type('text/html');
+      return dashboardHtml;
+    } catch (err) {
+      // Invalid token - clear cookie and return 401
+      reply.clearCookie('paya_dashboard_token');
+      
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      const dashboardPath = path.join(__dirname, '..', 'public', 'dashboard.html');
+      const dashboardHtml = readFileSync(dashboardPath, 'utf-8');
+      
+      reply.type('text/html').status(401);
+      return dashboardHtml;
+    }
+  });
 
   // Root route
   app.get('/', async () => {

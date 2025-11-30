@@ -1,7 +1,6 @@
 import { FastifyPluginAsync } from 'fastify';
 import { prisma } from '../lib/prisma.js';
 import { cacheGet, cacheSet } from '../lib/redis.js';
-import { TOKEN_TO_CENTS } from '@paya/shared';
 
 const CACHE_KEY = 'transparency:dashboard';
 const CACHE_TTL_SECONDS = 60; // Cache for 1 minute

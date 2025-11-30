@@ -12,7 +12,7 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // Detailed health check (for monitoring)
-  app.get('/detailed', async (request, reply) => {
+  app.get('/detailed', async (_request, reply) => {
     const checks: Record<string, { status: string; latency?: number; error?: string }> = {};
 
     // Check PostgreSQL

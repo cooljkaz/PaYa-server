@@ -46,7 +46,7 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
    */
   app.get<{
     Querystring: { page?: string; pageSize?: string; type?: string };
-  }>('/transactions', async (request, reply) => {
+  }>('/transactions', async (request, _reply) => {
     const page = Math.max(1, parseInt(request.query.page || '1'));
     const pageSize = Math.min(100, Math.max(1, parseInt(request.query.pageSize || '20')));
     const type = request.query.type;

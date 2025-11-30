@@ -109,7 +109,7 @@ export const feedRoutes: FastifyPluginAsync = async (app) => {
       request.log.info('Client disconnected from live feed');
     });
 
-    socket.on('error', (error) => {
+    socket.on('error', (error: Error) => {
       clearInterval(interval);
       request.log.error(error, 'WebSocket error');
     });

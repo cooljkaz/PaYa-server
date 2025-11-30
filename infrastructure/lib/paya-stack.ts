@@ -55,6 +55,21 @@ export class PaYaStack extends cdk.Stack {
           databaseUrl: 'postgresql://user:password@host:5432/dbname?sslmode=require',
           jwtAccessSecret: 'placeholder',
           jwtRefreshSecret: 'placeholder',
+          // Redis URL - will be populated after Redis is created
+          redisUrl: '',
+          // Twilio SMS
+          twilioAccountSid: '',
+          twilioAuthToken: '',
+          twilioPhoneNumber: '',
+          // Plaid bank linking
+          plaidClientId: '',
+          plaidSecret: '',
+          plaidEnv: 'sandbox',
+          // Synctera BaaS
+          syncteraApi: '',
+          syncteraEnv: 'sandbox',
+          syncteraWebhookSecret: '',
+          syncteraAccountTemplateId: '',
         }),
         generateStringKey: 'encryptionKey',
       },
@@ -88,20 +103,14 @@ export class PaYaStack extends cdk.Stack {
       transitEncryptionEnabled: false, // Disable transit encryption to reduce costs
       port: 6379,
     });
-    
-    // Construct Redis URL and add to secrets (will be updated after deployment)
-    const redisUrl = `redis://${redis.attrConfigurationEndPointAddress}:6379`;
 
     // ==================== ECR Repository ====================
-    const repository = new ecr.Repository(this, 'ECRRepository', {
-      repositoryName: `paya-${environment}`,
-      imageScanOnPush: true,
-      lifecycleRules: [
-        {
-          maxImageCount: 10, // Keep last 10 images
-        },
-      ],
-    });
+    // Import existing repository (already created with Docker image)
+    const repository = ecr.Repository.fromRepositoryName(
+      this,
+      'ECRRepository',
+      `paya-${environment}`
+    );
 
     // ==================== ECS Cluster ====================
     const cluster = new ecs.Cluster(this, 'Cluster', {
@@ -116,7 +125,6 @@ export class PaYaStack extends cdk.Stack {
     });
 
     // Grant task role access to secrets
-    dbCredentialsSecret.grantRead(taskRole);
     appSecrets.grantRead(taskRole);
 
     // ==================== Construct Connection URLs ====================
@@ -138,18 +146,26 @@ export class PaYaStack extends cdk.Stack {
           // App secrets
           JWT_ACCESS_SECRET: ecs.Secret.fromSecretsManager(appSecrets, 'jwtAccessSecret'),
           JWT_REFRESH_SECRET: ecs.Secret.fromSecretsManager(appSecrets, 'jwtRefreshSecret'),
-          // Optional: Add other secrets from appSecrets as needed
-          // TWILIO_ACCOUNT_SID: ecs.Secret.fromSecretsManager(appSecrets, 'twilioAccountSid'),
-          // TWILIO_AUTH_TOKEN: ecs.Secret.fromSecretsManager(appSecrets, 'twilioAuthToken'),
+          // Redis URL - will be populated after Redis is created
+          REDIS_URL: ecs.Secret.fromSecretsManager(appSecrets, 'redisUrl'),
+          // Twilio SMS
+          TWILIO_ACCOUNT_SID: ecs.Secret.fromSecretsManager(appSecrets, 'twilioAccountSid'),
+          TWILIO_AUTH_TOKEN: ecs.Secret.fromSecretsManager(appSecrets, 'twilioAuthToken'),
+          TWILIO_PHONE_NUMBER: ecs.Secret.fromSecretsManager(appSecrets, 'twilioPhoneNumber'),
+          // Plaid bank linking
+          PLAID_CLIENT_ID: ecs.Secret.fromSecretsManager(appSecrets, 'plaidClientId'),
+          PLAID_SECRET: ecs.Secret.fromSecretsManager(appSecrets, 'plaidSecret'),
+          // Synctera BaaS
+          SYNCTERA_API: ecs.Secret.fromSecretsManager(appSecrets, 'syncteraApi'),
+          SYNCTERA_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(appSecrets, 'syncteraWebhookSecret'),
+          SYNCTERA_ACCOUNT_TEMPLATE_ID: ecs.Secret.fromSecretsManager(appSecrets, 'syncteraAccountTemplateId'),
         },
         environment: {
           NODE_ENV: environment,
           PORT: '3000',
-          // Redis connection - constructed from ElastiCache endpoint
-          REDIS_HOST: redis.attrConfigurationEndPointAddress,
-          REDIS_PORT: '6379',
-          // Note: App should construct REDIS_URL from REDIS_HOST:REDIS_PORT
-          // Or set REDIS_URL as a secret after deployment
+          // Environment-specific settings (not secrets)
+          PLAID_ENV: environment === 'production' ? 'production' : 'sandbox',
+          SYNCTERA_ENV: environment === 'production' ? 'production' : 'sandbox',
         },
         logDriver: ecs.LogDrivers.awsLogs({
           streamPrefix: 'paya-api',
@@ -162,6 +178,12 @@ export class PaYaStack extends cdk.Stack {
       },
       publicLoadBalancer: true,
       healthCheckGracePeriod: cdk.Duration.seconds(60),
+    });
+
+    // Configure health check to use /health endpoint (default is /)
+    fargateService.targetGroup.configureHealthCheck({
+      path: '/health',
+      healthyHttpCodes: '200',
     });
 
     // Allow ECS tasks to access Redis
@@ -193,11 +215,8 @@ export class PaYaStack extends cdk.Stack {
       exportName: `PaYa-${environment}-DatabaseInfo`,
     });
 
-    new cdk.CfnOutput(this, 'RedisEndpoint', {
-      value: redis.attrConfigurationEndPointAddress,
-      description: 'Redis endpoint',
-      exportName: `PaYa-${environment}-RedisEndpoint`,
-    });
+    // Redis endpoint will be available after deployment - check AWS Console or use CLI:
+    // aws elasticache describe-replication-groups --replication-group-id <id> --query 'ReplicationGroups[0].ConfigurationEndpoint.Address'
   }
 }
 

@@ -20,7 +20,7 @@ NC='\033[0m' # No Color
 # Check prerequisites
 command -v aws >/dev/null 2>&1 || { echo -e "${RED}Error: AWS CLI not installed${NC}" >&2; exit 1; }
 command -v docker >/dev/null 2>&1 || { echo -e "${RED}Error: Docker not installed${NC}" >&2; exit 1; }
-command -v cdk >/dev/null 2>&1 || { echo -e "${RED}Error: AWS CDK not installed${NC}" >&2; exit 1; }
+command -v pnpm >/dev/null 2>&1 || { echo -e "${RED}Error: pnpm not installed${NC}" >&2; exit 1; }
 
 # Get AWS account info
 echo -e "${YELLOW}Checking AWS credentials...${NC}"
@@ -37,7 +37,7 @@ cd infrastructure
 if ! aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" >/dev/null 2>&1; then
   echo "Infrastructure not found. Deploying..."
   pnpm install
-  cdk bootstrap
+  pnpm cdk bootstrap
   if [ "$ENVIRONMENT" = "staging" ]; then
     pnpm deploy:staging
   else
@@ -49,14 +49,15 @@ fi
 
 # Step 2: Get ECR repository URI
 echo -e "\n${YELLOW}Step 2: Getting ECR repository...${NC}"
-ECR_REPO=$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
+ECR_REPO=$(aws ecr describe-repositories \
   --region "$REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='ECRRepositoryURI'].OutputValue" \
+  --repository-names "paya-${ENVIRONMENT}" \
+  --query 'repositories[0].repositoryUri' \
   --output text)
 
 if [ -z "$ECR_REPO" ]; then
-  echo -e "${RED}Error: Could not find ECR repository${NC}"
+  echo -e "${RED}Error: Could not find ECR repository paya-${ENVIRONMENT}${NC}"
+  echo -e "${YELLOW}Create it with: aws ecr create-repository --repository-name paya-${ENVIRONMENT} --region ${REGION}${NC}"
   exit 1
 fi
 echo -e "${GREEN}✓ ECR Repository: $ECR_REPO${NC}"
@@ -79,14 +80,32 @@ echo -e "${GREEN}✓ Image pushed successfully${NC}"
 
 # Step 6: Get cluster and service names
 echo -e "\n${YELLOW}Step 6: Updating ECS service...${NC}"
-CLUSTER_NAME=$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
+# Get cluster ARN from ECS (not CloudFormation outputs)
+# Search for cluster containing the stack name
+CLUSTER_ARN=$(aws ecs list-clusters \
   --region "$REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='ClusterName'].OutputValue" \
-  --output text)
+  --query "clusterArns[?contains(@, '$STACK_NAME')]" \
+  --output text | head -1)
 
-SERVICE_NAME=$(aws ecs list-services --cluster "$CLUSTER_NAME" --region "$REGION" \
-  --query 'serviceArns[0]' --output text | awk -F'/' '{print $NF}')
+if [ -z "$CLUSTER_ARN" ]; then
+  echo -e "${RED}Error: Could not find ECS cluster${NC}"
+  exit 1
+fi
+
+CLUSTER_NAME=$(echo "$CLUSTER_ARN" | awk -F'/' '{print $NF}')
+echo -e "${GREEN}✓ Cluster: $CLUSTER_NAME${NC}"
+
+SERVICE_NAME=$(aws ecs list-services \
+  --cluster "$CLUSTER_NAME" \
+  --region "$REGION" \
+  --query 'serviceArns[0]' \
+  --output text | awk -F'/' '{print $NF}')
+
+if [ -z "$SERVICE_NAME" ]; then
+  echo -e "${RED}Error: Could not find ECS service${NC}"
+  exit 1
+fi
+echo -e "${GREEN}✓ Service: $SERVICE_NAME${NC}"
 
 # Step 7: Force new deployment
 echo -e "\n${YELLOW}Step 7: Triggering new deployment...${NC}"

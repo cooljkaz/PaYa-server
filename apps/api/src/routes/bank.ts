@@ -14,7 +14,7 @@ import {
   RATE_LIMITS,
 } from '@paya/shared';
 import { checkRateLimit } from '../lib/redis.js';
-import { generateIdempotencyKey, isNewAccount, getWeekNumber } from '../lib/utils.js';
+import { generateIdempotencyKey, isNewAccount } from '../lib/utils.js';
 
 // Input types
 interface PlaidExchangeInput {

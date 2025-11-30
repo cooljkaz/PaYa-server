@@ -1,7 +1,15 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import { logger } from './logger.js';
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+// Construct Redis URL from environment variables
+// Supports both REDIS_URL (full URL) or REDIS_HOST + REDIS_PORT
+// TEMPORARY: Hard-coded for staging to unblock deployment (will use secret after stack completes)
+const REDIS_URL = process.env.REDIS_URL 
+  || (process.env.REDIS_HOST && process.env.REDIS_PORT 
+      ? `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`
+      : process.env.NODE_ENV === 'staging' 
+        ? 'redis://par16j5tmb4loaxn.boxgjg.ng.0001.use1.cache.amazonaws.com:6379'
+        : 'redis://localhost:6379');
 
 export const redis = new Redis(REDIS_URL, {
   maxRetriesPerRequest: 3,
@@ -12,7 +20,7 @@ redis.on('connect', () => {
   logger.info('Redis connected');
 });
 
-redis.on('error', (err) => {
+redis.on('error', (err: Error) => {
   logger.error({ err }, 'Redis error');
 });
 

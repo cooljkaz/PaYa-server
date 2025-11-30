@@ -39,6 +39,9 @@ RUN pnpm build
 FROM base AS runner
 WORKDIR /app
 
+# Install OpenSSL for Prisma (required for database connections)
+RUN apk add --no-cache openssl
+
 ENV NODE_ENV=production
 
 # Copy built files

@@ -257,3 +257,4 @@ cdk destroy PaYaStackProduction
 4. Configure auto-scaling
 5. Set up backup strategies
 
+

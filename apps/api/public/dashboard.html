@@ -642,15 +642,150 @@
 
   <div class="toast-container" id="toastContainer"></div>
 
+  <!-- Login Modal -->
+  <div id="loginModal" class="login-modal" style="display: none;">
+    <div class="login-modal-content">
+      <h2>Dashboard Login</h2>
+      <p class="login-subtitle">Use dev login to access the dashboard</p>
+      <form id="loginForm">
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input type="text" id="username" name="username" placeholder="Enter username" required autofocus>
+        </div>
+        <button type="submit" class="btn-primary">Login</button>
+        <div id="loginError" class="error-message" style="display: none;"></div>
+      </form>
+    </div>
+  </div>
+
+  <style>
+    .login-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(10px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+    }
+
+    .login-modal-content {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+
+    .login-modal-content h2 {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+      color: var(--accent);
+    }
+
+    .login-subtitle {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .form-group {
+      margin-bottom: 1.5rem;
+    }
+
+    .form-group label {
+      display: block;
+      margin-bottom: 0.5rem;
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+    }
+
+    .form-group input {
+      width: 100%;
+      padding: 0.75rem;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 1rem;
+      font-family: inherit;
+    }
+
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .error-message {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid var(--error);
+      border-radius: 8px;
+      color: var(--error);
+      font-size: 0.9rem;
+    }
+
+    .btn-primary {
+      width: 100%;
+      padding: 0.75rem;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary:hover {
+      background: #1f6b4a;
+      transform: translateY(-1px);
+    }
+
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+  </style>
+
   <script>
-    const API_BASE = 'http://localhost:3000';
+    // Use AWS staging URL (update to production domain when ready)
+    // For local development, you can override this by adding ?api=http://localhost:3000 to the URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const API_BASE = urlParams.get('api') || 'http://PaYaSt-Farga-jjKXua2NM2Df-1359529141.us-east-1.elb.amazonaws.com';
     let users = [];
     let selectedUser = null;
     let authToken = null;
     let ws = null;
 
+    // Check if login is required
+    let loginRequired = window.DASHBOARD_LOGIN_REQUIRED || false;
+
     // Initialize
     document.addEventListener('DOMContentLoaded', () => {
+      // Check if we need to show login
+      if (loginRequired) {
+        showLoginModal();
+      } else {
+        initializeDashboard();
+      }
+
+      // Setup login form
+      const loginForm = document.getElementById('loginForm');
+      if (loginForm) {
+        loginForm.addEventListener('submit', handleLogin);
+      }
+    });
+
+    function initializeDashboard() {
       checkConnection();
       refreshStats();
       refreshUsers();
@@ -660,7 +795,89 @@
       // Auto-refresh
       setInterval(refreshStats, 10000);
       setInterval(refreshTransactions, 5000);
-    });
+    }
+
+    function showLoginModal() {
+      const modal = document.getElementById('loginModal');
+      if (modal) {
+        modal.style.display = 'flex';
+      }
+      // Hide main content
+      const container = document.querySelector('.container');
+      if (container) {
+        container.style.opacity = '0.3';
+        container.style.pointerEvents = 'none';
+      }
+    }
+
+    function hideLoginModal() {
+      const modal = document.getElementById('loginModal');
+      if (modal) {
+        modal.style.display = 'none';
+      }
+      // Show main content
+      const container = document.querySelector('.container');
+      if (container) {
+        container.style.opacity = '1';
+        container.style.pointerEvents = 'auto';
+      }
+    }
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      const usernameInput = document.getElementById('username') as HTMLInputElement;
+      const errorDiv = document.getElementById('loginError');
+      const username = usernameInput?.value.trim();
+
+      if (!username) {
+        if (errorDiv) {
+          errorDiv.textContent = 'Username is required';
+          errorDiv.style.display = 'block';
+        }
+        return;
+      }
+
+      try {
+        // Step 1: Use dev login to get token
+        const loginRes = await fetch(`${API_BASE}/dev/login/${username}`, {
+          method: 'POST',
+        });
+
+        if (!loginRes.ok) {
+          const data = await loginRes.json();
+          throw new Error(data.error?.message || 'Login failed');
+        }
+
+        const loginData = await loginRes.json();
+        if (!loginData.success || !loginData.data?.accessToken) {
+          throw new Error('Invalid response from login');
+        }
+
+        const token = loginData.data.accessToken;
+
+        // Step 2: Set token in cookie via dashboard login endpoint
+        const dashboardLoginRes = await fetch(`${API_BASE}/public/dashboard/login`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ token }),
+        });
+
+        if (!dashboardLoginRes.ok) {
+          const data = await dashboardLoginRes.json();
+          throw new Error(data.error?.message || 'Failed to set session');
+        }
+
+        // Success - reload page to access dashboard
+        window.location.reload();
+      } catch (error) {
+        if (errorDiv) {
+          errorDiv.textContent = error instanceof Error ? error.message : 'Login failed';
+          errorDiv.style.display = 'block';
+        }
+      }
+    }
 
     async function checkConnection() {
       try {
@@ -897,7 +1114,9 @@
 
     function connectWebSocket() {
       try {
-        ws = new WebSocket(`ws://localhost:3000/feed/live`);
+        // Convert HTTP to WebSocket URL
+        const wsUrl = API_BASE.replace(/^http/, 'ws') + '/feed/live';
+        ws = new WebSocket(wsUrl);
         
         ws.onopen = () => {
           console.log('WebSocket connected');

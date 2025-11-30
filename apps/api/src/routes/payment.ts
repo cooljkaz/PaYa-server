@@ -6,7 +6,6 @@ import {
   type SendPaymentInput,
   ERROR_CODES,
   RATE_LIMITS,
-  PHONE,
 } from '@paya/shared';
 import { generateIdempotencyKey, getWeekNumber, hashPhone } from '../lib/utils.js';
 import { sendSms } from '../services/sms.js';

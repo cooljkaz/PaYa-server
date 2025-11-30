@@ -14,7 +14,6 @@ import {
   LinkTokenCreateRequest,
   ItemPublicTokenExchangeRequest,
   AuthGetRequest,
-  AccountsGetRequest,
   InstitutionsGetByIdRequest,
 } from 'plaid';
 import { logger } from './logger.js';

@@ -1,6 +1,5 @@
 import { FastifyPluginAsync } from 'fastify';
 import { prisma } from '../lib/prisma.js';
-import { synctera } from '../lib/synctera.js';
 import crypto from 'crypto';
 
 /**

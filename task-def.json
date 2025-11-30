@@ -1,0 +1,78 @@
+{
+    "containerDefinitions": [
+        {
+            "name": "web",
+            "image": "789406174721.dkr.ecr.us-east-1.amazonaws.com/paya-staging:latest",
+            "cpu": 0,
+            "links": [],
+            "portMappings": [
+                {
+                    "containerPort": 3000,
+                    "hostPort": 3000,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "entryPoint": [],
+            "command": [],
+            "environment": [
+                {
+                    "name": "PORT",
+                    "value": "3000"
+                },
+                {
+                    "name": "NODE_ENV",
+                    "value": "staging"
+                }
+            ],
+            "environmentFiles": [],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "secrets": [
+                {
+                    "name": "DATABASE_URL",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-1:789406174721:secret:paya-staging-app-secrets-6Ex8JR:databaseUrl::"
+                },
+                {
+                    "name": "JWT_ACCESS_SECRET",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-1:789406174721:secret:paya-staging-app-secrets-6Ex8JR:jwtAccessSecret::"
+                },
+                {
+                    "name": "JWT_REFRESH_SECRET",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-1:789406174721:secret:paya-staging-app-secrets-6Ex8JR:jwtRefreshSecret::"
+                },
+                {
+                    "name": "REDIS_URL",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-1:789406174721:secret:paya-staging-app-secrets-6Ex8JR:redisUrl::"
+                }
+            ],
+            "dnsServers": [],
+            "dnsSearchDomains": [],
+            "extraHosts": [],
+            "dockerSecurityOptions": [],
+            "dockerLabels": {},
+            "ulimits": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/paya-staging",
+                    "awslogs-region": "us-east-1",
+                    "awslogs-stream-prefix": "paya-api"
+                },
+                "secretOptions": []
+            },
+            "systemControls": [],
+            "credentialSpecs": []
+        }
+    ],
+    "family": "PaYaStackStagingFargateServiceTaskDef3966E99E",
+    "taskRoleArn": "arn:aws:iam::789406174721:role/PaYaStackStaging-FargateServiceTaskDefTaskRole8CDCF-r1ujKQk458B5",
+    "executionRoleArn": "arn:aws:iam::789406174721:role/PaYaStackStaging-FargateServiceTaskDefExecutionRole-aPby4psFfCVz",
+    "networkMode": "awsvpc",
+    "volumes": [],
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "512",
+    "memory": "1024"
+}
