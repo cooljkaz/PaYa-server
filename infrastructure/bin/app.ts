@@ -12,7 +12,9 @@ new PaYaStack(app, 'PaYaStackStaging', {
     region: process.env.CDK_DEFAULT_REGION || 'us-east-1',
   },
   environment: 'staging',
-  domainName: 'api-staging.paya.cash', // Optional: change to your domain
+  // No domain for staging - uses AWS-generated DNS (HTTP only)
+  // This is acceptable for internal/staging use
+  // domainName: 'api-staging.paya.cash', // Optional: uncomment to enable HTTPS
 });
 
 // Production environment

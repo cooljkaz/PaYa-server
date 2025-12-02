@@ -25,6 +25,27 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    // Check if user is active this week (eligible for rewards)
+    // Calculate current week number (YYYYWW format)
+    const now = new Date();
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+    const weekNum = Math.ceil(((now.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getDay() + 1) / 7);
+    const currentWeekNumber = now.getFullYear() * 100 + weekNum;
+
+    const weeklyActivity = await prisma.weeklyActivity.findUnique({
+      where: {
+        userId_weekNumber: {
+          userId: request.userId,
+          weekNumber: currentWeekNumber,
+        },
+      },
+    });
+
+    // User is active if they've sent or received public payments this week
+    const isActiveThisWeek = weeklyActivity 
+      ? (weeklyActivity.publicPaymentsSent > 0 || weeklyActivity.publicPaymentsReceived > 0)
+      : false;
+
     return {
       success: true,
       data: {
@@ -35,6 +56,7 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
         totalReceived: Number(wallet.totalReceived),
         totalRedeemed: Number(wallet.totalRedeemed),
         totalRewards: Number(wallet.totalRewards),
+        isActiveThisWeek,
         updatedAt: wallet.updatedAt,
       },
     };

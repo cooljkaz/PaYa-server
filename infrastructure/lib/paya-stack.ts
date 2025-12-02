@@ -8,6 +8,9 @@ import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import { Construct } from 'constructs';
 
 export interface PaYaStackProps extends cdk.StackProps {
@@ -45,34 +48,14 @@ export class PaYaStack extends cdk.Stack {
     });
 
     // ==================== Secrets ====================
-    // Using Supabase PostgreSQL - store connection string in secrets
+    // Create secret but DO NOT use generateSecretString to avoid overwriting values
+    // The secret is created here but values should be updated manually via AWS Console
+    // This way CDK manages the secret lifecycle but doesn't overwrite your actual values
     const appSecrets = new secretsmanager.Secret(this, 'AppSecrets', {
       secretName: `paya-${environment}-app-secrets`,
       description: 'Application secrets (JWT, API keys, Supabase DATABASE_URL, etc.)',
-      generateSecretString: {
-        secretStringTemplate: JSON.stringify({
-          // Supabase connection string - set this manually after creating secret
-          databaseUrl: 'postgresql://user:password@host:5432/dbname?sslmode=require',
-          jwtAccessSecret: 'placeholder',
-          jwtRefreshSecret: 'placeholder',
-          // Redis URL - will be populated after Redis is created
-          redisUrl: '',
-          // Twilio SMS
-          twilioAccountSid: '',
-          twilioAuthToken: '',
-          twilioPhoneNumber: '',
-          // Plaid bank linking
-          plaidClientId: '',
-          plaidSecret: '',
-          plaidEnv: 'sandbox',
-          // Synctera BaaS
-          syncteraApi: '',
-          syncteraEnv: 'sandbox',
-          syncteraWebhookSecret: '',
-          syncteraAccountTemplateId: '',
-        }),
-        generateStringKey: 'encryptionKey',
-      },
+      // DO NOT use generateSecretString - it can overwrite values on stack updates
+      // Create with empty template, then update values manually
     });
 
     // ==================== Redis (ElastiCache) ====================
@@ -127,6 +110,34 @@ export class PaYaStack extends cdk.Stack {
     // Grant task role access to secrets
     appSecrets.grantRead(taskRole);
 
+    // ==================== SSL Certificate & Domain ====================
+    // Note: HTTPS requires a domain you own. ACM certificates cannot be issued for AWS-generated DNS names.
+    // For staging/internal use, HTTP with proper security headers is acceptable.
+    // For production, you should set up a domain and enable HTTPS.
+    let certificate: acm.ICertificate | undefined;
+    let hostedZone: route53.IHostedZone | undefined;
+
+    if (domainName) {
+      // Look up Route53 hosted zone for the domain
+      const rootDomain = domainName.split('.').slice(-2).join('.'); // e.g., 'paya.cash' from 'api-staging.paya.cash'
+      
+      try {
+        // Lookup hosted zone (will fail at synth time if not found)
+        hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
+          domainName: rootDomain,
+        });
+
+        // Request ACM certificate for the domain (must be in us-east-1 for ALB)
+        certificate = new acm.Certificate(this, 'Certificate', {
+          domainName: domainName,
+          validation: acm.CertificateValidation.fromDns(hostedZone),
+        });
+      } catch (error) {
+        // If hosted zone doesn't exist, we'll use HTTP only (acceptable for staging)
+        console.warn(`Hosted zone for ${rootDomain} not found. Using HTTP only.`);
+      }
+    }
+
     // ==================== Construct Connection URLs ====================
     // Note: These will be set via environment variables that reference secrets
     // The app will construct full URLs from these components
@@ -137,6 +148,10 @@ export class PaYaStack extends cdk.Stack {
       cpu: environment === 'production' ? 1024 : 512,
       memoryLimitMiB: environment === 'production' ? 2048 : 1024,
       desiredCount: environment === 'production' ? 2 : 1,
+      certificate, // Add certificate if domain is configured
+      domainName: certificate ? domainName : undefined, // Set domain if certificate exists
+      domainZone: hostedZone, // Route53 hosted zone
+      redirectHTTP: certificate ? true : false, // Redirect HTTP to HTTPS if certificate exists
       taskImageOptions: {
         image: ecs.ContainerImage.fromEcrRepository(repository, 'latest'),
         containerPort: 3000,
@@ -180,6 +195,14 @@ export class PaYaStack extends cdk.Stack {
       healthCheckGracePeriod: cdk.Duration.seconds(60),
     });
 
+    // Grant both execution role (for ECS to fetch secrets) and task role (for app to access secrets) access to secrets
+    // Execution role is used by ECS to fetch secrets and inject them as environment variables
+    if (fargateService.taskDefinition.executionRole) {
+      appSecrets.grantRead(fargateService.taskDefinition.executionRole);
+    }
+    // Task role is used by the running container (though secrets are already injected as env vars)
+    appSecrets.grantRead(fargateService.taskDefinition.taskRole);
+
     // Configure health check to use /health endpoint (default is /)
     fargateService.targetGroup.configureHealthCheck({
       path: '/health',
@@ -202,6 +225,20 @@ export class PaYaStack extends cdk.Stack {
       description: 'Load Balancer DNS name',
       exportName: `PaYa-${environment}-LoadBalancerDNS`,
     });
+
+    if (domainName && certificate) {
+      new cdk.CfnOutput(this, 'ApiUrl', {
+        value: `https://${domainName}`,
+        description: 'HTTPS API URL',
+        exportName: `PaYa-${environment}-ApiUrl`,
+      });
+    } else {
+      new cdk.CfnOutput(this, 'ApiUrl', {
+        value: `http://${fargateService.loadBalancer.loadBalancerDnsName}`,
+        description: 'HTTP API URL (no HTTPS configured)',
+        exportName: `PaYa-${environment}-ApiUrl`,
+      });
+    }
 
     new cdk.CfnOutput(this, 'ECRRepositoryURI', {
       value: repository.repositoryUri,

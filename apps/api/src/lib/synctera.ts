@@ -211,18 +211,18 @@ class SyncteraClient {
   // ==================== ACCOUNT MANAGEMENT ====================
 
   /**
-   * Create an internal account for the customer (their PaYa wallet backing account)
+   * Create an internal wallet account for the customer (their PaYa wallet backing account)
+   * Account type is defined by SYNCTERA_ACCOUNT_TEMPLATE_ID (should be a simple checking/wallet account)
    */
-  async createAccount(
-    customerId: string,
-    accountType: 'CHECKING' | 'SAVINGS' = 'CHECKING'
-  ): Promise<SyncteraAccount> {
+  async createAccount(customerId: string): Promise<SyncteraAccount> {
+    if (!process.env.SYNCTERA_ACCOUNT_TEMPLATE_ID) {
+      throw new SyncteraError('SYNCTERA_ACCOUNT_TEMPLATE_ID not configured', 500);
+    }
+    
     return this.request<SyncteraAccount>('/accounts', {
       method: 'POST',
       body: JSON.stringify({
-        account_type: accountType,
         customer_ids: [customerId],
-        // You'll need to get your account_template_id from Synctera dashboard
         account_template_id: process.env.SYNCTERA_ACCOUNT_TEMPLATE_ID,
       }),
     });

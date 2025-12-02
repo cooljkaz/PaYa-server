@@ -77,12 +77,12 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       // This is necessary because verifyOtp consumes the OTP
       await storeOtp(phone, otp, SESSION.OTP_EXPIRY_SECONDS);
 
-      // User doesn't exist - they need to register
+      // User doesn't exist - client will redirect to registration flow
       return reply.status(404).send({
         success: false,
         error: {
           code: ERROR_CODES.USER_NOT_FOUND,
-          message: 'User not found. Please register.',
+          message: 'New user - registration required',
         },
       });
     }
@@ -386,10 +386,19 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    // Update last used
+    // Generate new refresh token (rotation - 7 day clock starts over)
+    const newRefreshToken = crypto.randomBytes(32).toString('hex');
+    const newTokenHash = crypto.createHash('sha256').update(newRefreshToken).digest('hex');
+    const newExpiresAt = new Date(Date.now() + SESSION.REFRESH_TOKEN_EXPIRY_SECONDS * 1000);
+
+    // Update session with new refresh token and reset expiry
     await prisma.session.update({
       where: { id: session.id },
-      data: { lastUsedAt: new Date() },
+      data: {
+        tokenHash: newTokenHash,
+        expiresAt: newExpiresAt,
+        lastUsedAt: new Date(),
+      },
     });
 
     // Generate new access token
@@ -398,10 +407,19 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       username: session.user.username,
     });
 
+    request.log.info({ 
+      userId: session.user.id,
+      username: session.user.username,
+      tokenLength: accessToken.length,
+      hasJwtSecret: !!process.env.JWT_ACCESS_SECRET,
+      sessionId: session.id,
+    }, 'Token refresh successful - new access token generated');
+
     return reply.status(200).send({
       success: true,
       data: {
         accessToken,
+        refreshToken: newRefreshToken, // Return new refresh token for rotation
         expiresIn: SESSION.ACCESS_TOKEN_EXPIRY_SECONDS,
       },
     });

@@ -77,9 +77,13 @@ class PlaidClient {
         },
       });
       this.client = new PlaidApi(configuration);
-      logger.info({ env: PLAID_ENV }, 'Plaid client initialized');
+      logger.info({ env: PLAID_ENV, clientIdPrefix: PLAID_CLIENT_ID.substring(0, 10) + '...' }, 'Plaid client initialized');
     } else {
-      logger.warn('Plaid credentials not configured');
+      logger.warn({ 
+        hasClientId: !!PLAID_CLIENT_ID, 
+        hasSecret: !!PLAID_SECRET,
+        nodeEnv: process.env.NODE_ENV 
+      }, 'Plaid credentials not configured');
     }
   }
 
@@ -87,7 +91,16 @@ class PlaidClient {
    * Check if Plaid is configured
    */
   isConfigured(): boolean {
-    return this.client !== null;
+    const configured = this.client !== null;
+    if (!configured) {
+      logger.warn({
+        hasClientId: !!PLAID_CLIENT_ID,
+        hasSecret: !!PLAID_SECRET,
+        plaidEnv: PLAID_ENV,
+        clientIdPrefix: PLAID_CLIENT_ID ? PLAID_CLIENT_ID.substring(0, 10) + '...' : 'missing',
+      }, 'Plaid client not configured');
+    }
+    return configured;
   }
 
   /**

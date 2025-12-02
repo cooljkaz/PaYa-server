@@ -13,9 +13,12 @@
     "db:migrate": "pnpm --filter @paya/api db:migrate",
     "db:push": "pnpm --filter @paya/api db:push",
     "db:studio": "pnpm --filter @paya/api db:studio",
-    "db:seed": "pnpm --filter @paya/api db:seed"
+    "db:seed": "pnpm --filter @paya/api db:seed",
+    "test-data": "pnpm --filter @paya/api test-data",
+    "setup:synctera-ops": "pnpm exec tsx scripts/setup-synctera-ops.ts"
   },
   "devDependencies": {
+    "tsx": "^4.19.0",
     "turbo": "^2.2.0",
     "typescript": "^5.6.0"
   },
@@ -25,4 +28,3 @@
     "pnpm": ">=8.0.0"
   }
 }
-

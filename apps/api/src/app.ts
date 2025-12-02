@@ -60,7 +60,7 @@ export async function buildApp() {
   await app.register(jwt, {
     secret: process.env.JWT_ACCESS_SECRET || 'dev-secret-change-me',
     sign: {
-      expiresIn: '15m',
+      expiresIn: '60m', // Match SESSION.ACCESS_TOKEN_EXPIRY_SECONDS (60 minutes)
     },
   });
 

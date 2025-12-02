@@ -6,6 +6,16 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 
 async function main() {
+  // Log environment configuration at startup (without exposing secrets)
+  logger.info({
+    nodeEnv: process.env.NODE_ENV,
+    hasPlaidClientId: !!process.env.PLAID_CLIENT_ID,
+    hasPlaidSecret: !!process.env.PLAID_SECRET,
+    plaidEnv: process.env.PLAID_ENV,
+    hasDatabaseUrl: !!process.env.DATABASE_URL,
+    hasRedisUrl: !!process.env.REDIS_URL,
+  }, 'Server startup configuration');
+
   const app = await buildApp();
 
   try {

@@ -11,6 +11,19 @@ export async function registerAuthMiddleware(app: FastifyInstance) {
     reply: FastifyReply
   ) {
     try {
+      const authHeader = request.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        request.log.warn({ url: request.url }, 'Missing or invalid Authorization header');
+        return reply.status(401).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.UNAUTHORIZED,
+            message: 'Missing or invalid authorization token',
+          },
+        });
+      }
+
+      const token = authHeader.substring(7); // Remove "Bearer " prefix
       const decoded = await request.jwtVerify<{
         userId: string;
         username: string;
@@ -18,12 +31,24 @@ export async function registerAuthMiddleware(app: FastifyInstance) {
       
       request.userId = decoded.userId;
       request.username = decoded.username;
-    } catch (err) {
+      request.log.info({ 
+        userId: decoded.userId, 
+        username: decoded.username,
+        tokenPrefix: token.substring(0, 20) + '...',
+      }, 'Token verified successfully');
+    } catch (err: any) {
+      request.log.warn({ 
+        url: request.url,
+        error: err.message,
+        errorName: err.name,
+        hasJwtSecret: !!process.env.JWT_ACCESS_SECRET,
+      }, 'JWT verification failed');
+      
       return reply.status(401).send({
         success: false,
         error: {
           code: ERROR_CODES.UNAUTHORIZED,
-          message: 'Invalid or expired token',
+          message: err.message || 'Invalid or expired token',
         },
       });
     }

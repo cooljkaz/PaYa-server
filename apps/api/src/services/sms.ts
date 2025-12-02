@@ -47,16 +47,29 @@ export async function sendSmsOtp(phone: string, otp: string): Promise<void> {
   }
 
   try {
-    await client.messages.create({
+    logger.info({ phone: phone.slice(-4), from: config.fromNumber }, 'Attempting to send SMS OTP via Twilio');
+    
+    const message = await client.messages.create({
       body: `Your PaYa code is: ${otp}. Expires in 5 minutes.`,
       from: config.fromNumber,
       to: phone,
     });
 
-    logger.info({ phone: phone.slice(-4) }, 'SMS OTP sent via Twilio');
+    logger.info({ 
+      phone: phone.slice(-4), 
+      messageSid: message.sid,
+      status: message.status,
+    }, 'SMS OTP sent via Twilio');
   } catch (error: any) {
-    logger.error({ error: error.message, phone: phone.slice(-4) }, 'Failed to send SMS OTP');
-    // Don't throw in dev - allow testing without Twilio
+    logger.error({ 
+      error: error.message, 
+      code: error.code,
+      moreInfo: error.moreInfo,
+      phone: phone.slice(-4),
+      from: config.fromNumber,
+    }, 'Failed to send SMS OTP via Twilio');
+    
+    // In staging, we want to see errors but not block
     if (process.env.NODE_ENV === 'production') {
       throw new Error('Failed to send SMS');
     }

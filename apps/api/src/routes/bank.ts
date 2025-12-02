@@ -16,6 +16,80 @@ import {
 import { checkRateLimit } from '../lib/redis.js';
 import { generateIdempotencyKey, isNewAccount } from '../lib/utils.js';
 
+/**
+ * Ensure user has Synctera customer and internal wallet account
+ * Called when user first links a bank account
+ * Creates customer + internal account if they don't exist
+ */
+async function ensureSyncteraWalletAccount(
+  userId: string,
+  username: string,
+  phoneLastFour: string,
+  request: any
+): Promise<{ customerId: string; accountId: string } | null> {
+  if (!synctera.isConfigured()) {
+    return null;
+  }
+
+  // Check current state
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { syncteraCustomerId: true, syncteraAccountId: true },
+  });
+
+  if (!user) {
+    return null;
+  }
+
+  // If already fully set up, return existing IDs
+  if (user.syncteraCustomerId && user.syncteraAccountId) {
+    return {
+      customerId: user.syncteraCustomerId,
+      accountId: user.syncteraAccountId,
+    };
+  }
+
+  try {
+    // Step 1: Ensure customer exists
+    let syncteraCustomerId = user.syncteraCustomerId;
+    if (!syncteraCustomerId) {
+      const customer = await synctera.createCustomer({
+        first_name: username,
+        last_name: 'User',
+        phone_number: `+1${phoneLastFour}000000`,
+      });
+      syncteraCustomerId = customer.id;
+      await prisma.user.update({
+        where: { id: userId },
+        data: { syncteraCustomerId },
+      });
+      request.log.info({ userId, customerId: syncteraCustomerId }, 'Created Synctera customer');
+    }
+
+    // Step 2: Ensure internal wallet account exists
+    let syncteraAccountId = user.syncteraAccountId;
+    if (!syncteraAccountId) {
+      // Account type is defined by SYNCTERA_ACCOUNT_TEMPLATE_ID
+      // This should be a simple checking/wallet account
+      const account = await synctera.createAccount(syncteraCustomerId);
+      syncteraAccountId = account.id;
+      await prisma.user.update({
+        where: { id: userId },
+        data: { syncteraAccountId },
+      });
+      request.log.info({ userId, accountId: syncteraAccountId }, 'Created Synctera wallet account');
+    }
+
+    return {
+      customerId: syncteraCustomerId,
+      accountId: syncteraAccountId,
+    };
+  } catch (error) {
+    request.log.error({ userId, error }, 'Failed to create Synctera wallet account');
+    throw error;
+  }
+}
+
 // Input types
 interface PlaidExchangeInput {
   publicToken: string;
@@ -77,22 +151,18 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
   app.post('/link/create-token', async (request, reply) => {
     // Check if Plaid is configured
     if (!plaid.isConfigured()) {
-      // Development mode - return mock token
-      if (process.env.NODE_ENV === 'development') {
-        return {
-          success: true,
-          data: {
-            linkToken: 'link-sandbox-mock-token',
-            expiration: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-          },
-        };
-      }
-
-      return reply.status(501).send({
+      request.log.error({ 
+        nodeEnv: process.env.NODE_ENV,
+        hasPlaidClientId: !!process.env.PLAID_CLIENT_ID,
+        hasPlaidSecret: !!process.env.PLAID_SECRET,
+        plaidEnv: process.env.PLAID_ENV,
+      }, 'Plaid not configured - credentials missing');
+      
+      return reply.status(500).send({
         success: false,
         error: {
           code: ERROR_CODES.INTERNAL_ERROR,
-          message: 'Bank linking service not configured',
+          message: 'Bank linking service not configured. Please check Plaid credentials in AWS Secrets Manager.',
         },
       });
     }
@@ -215,36 +285,32 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
 
       let syncteraExternalAccountId: string | null = null;
 
-      // If Synctera is configured, create external account there for ACH
+      // If Synctera is configured, create customer + wallet + external account
       if (synctera.isConfigured()) {
         try {
-          // Ensure user has Synctera customer
-          let syncteraCustomerId = user.syncteraCustomerId;
-          if (!syncteraCustomerId) {
-            const customer = await synctera.createCustomer({
-              first_name: user.username,
-              last_name: 'User',
-              phone_number: `+1${user.phoneLastFour}000000`,
+          // Ensure user has Synctera customer and internal wallet account
+          const syncteraInfo = await ensureSyncteraWalletAccount(
+            request.userId,
+            user.username,
+            user.phoneLastFour,
+            request
+          );
+          
+          if (syncteraInfo) {
+            // Create external account in Synctera using Plaid data
+            // External account type must match user's actual bank (checking/savings)
+            const externalAccount = await synctera.createExternalAccount({
+              customer_id: syncteraInfo.customerId,
+              account_owner_names: [selectedAccount.accountName],
+              routing_number: selectedAccount.routingNumber,
+              account_number: selectedAccount.accountNumber,
+              account_type: selectedAccount.accountSubtype === 'savings' ? 'SAVINGS' : 'CHECKING',
             });
-            syncteraCustomerId = customer.id;
-            await prisma.user.update({
-              where: { id: request.userId },
-              data: { syncteraCustomerId },
-            });
+
+            syncteraExternalAccountId = externalAccount.id;
           }
-
-          // Create external account in Synctera using Plaid data
-          const externalAccount = await synctera.createExternalAccount({
-            customer_id: syncteraCustomerId,
-            account_owner_names: [selectedAccount.accountName],
-            routing_number: selectedAccount.routingNumber,
-            account_number: selectedAccount.accountNumber,
-            account_type: selectedAccount.accountSubtype === 'savings' ? 'SAVINGS' : 'CHECKING',
-          });
-
-          syncteraExternalAccountId = externalAccount.id;
         } catch (syncError) {
-          request.log.error({ error: syncError }, 'Failed to create Synctera external account');
+          request.log.error({ error: syncError }, 'Failed to create Synctera accounts');
           // Continue without Synctera - we still have the Plaid data
         }
       }
@@ -373,37 +439,34 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      // Ensure user has Synctera customer
-      let syncteraCustomerId = user.syncteraCustomerId;
-      if (!syncteraCustomerId && synctera.isConfigured()) {
-        const customer = await synctera.createCustomer({
-          first_name: accountOwnerName.split(' ')[0] || 'User',
-          last_name: accountOwnerName.split(' ').slice(1).join(' ') || user.username,
-          phone_number: `+1${user.phoneLastFour}000000`,
-        });
-        syncteraCustomerId = customer.id;
-        await prisma.user.update({
-          where: { id: request.userId },
-          data: { syncteraCustomerId },
-        });
-      }
-
       let syncteraExternalAccountId: string | null = null;
 
-      if (synctera.isConfigured() && syncteraCustomerId) {
-        // Create external account in Synctera
-        const externalAccount = await synctera.createExternalAccount({
-          customer_id: syncteraCustomerId,
-          account_owner_names: [accountOwnerName],
-          routing_number: routingNumber,
-          account_number: accountNumber,
-          account_type: accountType,
-        });
+      // If Synctera is configured, create customer + wallet + external account
+      if (synctera.isConfigured()) {
+        // Ensure user has Synctera customer and internal wallet account
+        const syncteraInfo = await ensureSyncteraWalletAccount(
+          request.userId,
+          user.username,
+          user.phoneLastFour,
+          request
+        );
 
-        syncteraExternalAccountId = externalAccount.id;
+        if (syncteraInfo) {
+          // Create external account in Synctera
+          // External account type must match user's actual bank (checking/savings)
+          const externalAccount = await synctera.createExternalAccount({
+            customer_id: syncteraInfo.customerId,
+            account_owner_names: [accountOwnerName],
+            routing_number: routingNumber,
+            account_number: accountNumber,
+            account_type: accountType,
+          });
 
-        // Initiate micro-deposit verification
-        await synctera.initiateMicroDeposits(externalAccount.id);
+          syncteraExternalAccountId = externalAccount.id;
+
+          // Initiate micro-deposit verification
+          await synctera.initiateMicroDeposits(externalAccount.id);
+        }
       }
 
       // Create bank account record

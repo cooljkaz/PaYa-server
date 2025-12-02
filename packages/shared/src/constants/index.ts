@@ -84,8 +84,8 @@ export const VALIDATION = {
 // -------------------- Session --------------------
 
 export const SESSION = {
-  /** Access token expiry (15 minutes) */
-  ACCESS_TOKEN_EXPIRY_SECONDS: 15 * 60,
+  /** Access token expiry (60 minutes) */
+  ACCESS_TOKEN_EXPIRY_SECONDS: 60 * 60,
 
   /** Refresh token expiry (7 days) */
   REFRESH_TOKEN_EXPIRY_SECONDS: 7 * 24 * 60 * 60,
