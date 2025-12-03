@@ -28,6 +28,7 @@ import { transparencyRoutes } from './routes/transparency.js';
 import { adminRoutes } from './routes/admin.js';
 import { devRoutes } from './routes/dev.js';
 import { webhookRoutes } from './routes/webhooks.js';
+import { kycRoutes } from './routes/kyc.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -156,6 +157,7 @@ export async function buildApp() {
   await app.register(adminRoutes, { prefix: '/admin' });
   await app.register(devRoutes, { prefix: '/dev' });
   await app.register(webhookRoutes, { prefix: '/webhooks' });
+  await app.register(kycRoutes, { prefix: '/kyc' });
 
   // Dashboard login endpoint (sets cookie)
   app.post('/public/dashboard/login', async (request, reply) => {

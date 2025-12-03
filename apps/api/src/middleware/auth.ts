@@ -24,6 +24,13 @@ export async function registerAuthMiddleware(app: FastifyInstance) {
       }
 
       const token = authHeader.substring(7); // Remove "Bearer " prefix
+      
+      request.log.info({ 
+        url: request.url,
+        tokenPrefix: token.substring(0, 30) + '...',
+        tokenLength: token.length,
+      }, 'Attempting to verify token');
+      
       const decoded = await request.jwtVerify<{
         userId: string;
         username: string;

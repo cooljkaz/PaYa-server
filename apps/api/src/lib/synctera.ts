@@ -22,6 +22,15 @@ export interface SyncteraCustomer {
   last_name: string;
   email?: string;
   phone_number?: string;
+  dob?: string; // YYYY-MM-DD
+  ssn_last_4?: string;
+  address?: {
+    address_line_1: string;
+    city: string;
+    state: string;
+    postal_code: string;
+    country_code: string;
+  };
   status: 'ACTIVE' | 'INACTIVE' | 'PROSPECT' | 'DENIED';
   verification_status?: 'UNVERIFIED' | 'PENDING' | 'VERIFIED' | 'REJECTED';
   created_time: string;
@@ -78,6 +87,27 @@ export interface CreateCustomerInput {
     postal_code: string;
     country_code: string;
   };
+}
+
+export interface KYCVerificationInput {
+  person_id: string; // Synctera customer ID
+  customer_consent: boolean;
+  customer_ip_address: string;
+}
+
+export interface KYCVerificationResult {
+  id: string;
+  person_id: string;
+  verification_status: 'ACCEPTED' | 'PENDING' | 'REJECTED';
+  result: 'ACCEPTED' | 'PENDING' | 'REJECTED';
+  verification_type: 'IDENTITY';
+  verification_time: string;
+  details?: Array<{
+    category: string;
+    result: 'PASS' | 'FAIL' | 'PENDING';
+    score?: number;
+    description?: string;
+  }>;
 }
 
 export interface CreateExternalAccountInput {
@@ -197,13 +227,15 @@ class SyncteraClient {
 
   /**
    * Trigger KYC verification for customer
+   * Requires customer to have: first_name, last_name, dob, email, phone_number, legal_address, ssn
    */
-  async verifyCustomer(customerId: string): Promise<{ verification_id: string }> {
-    return this.request<{ verification_id: string }>('/verifications/verify', {
+  async verifyCustomerIdentity(input: KYCVerificationInput): Promise<KYCVerificationResult> {
+    return this.request<KYCVerificationResult>('/verifications/verification', {
       method: 'POST',
       body: JSON.stringify({
-        customer_id: customerId,
-        verification_type: 'IDENTITY',
+        person_id: input.person_id,
+        customer_consent: input.customer_consent,
+        customer_ip_address: input.customer_ip_address,
       }),
     });
   }

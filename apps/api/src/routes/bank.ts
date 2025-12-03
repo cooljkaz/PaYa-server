@@ -1,4 +1,5 @@
 import { FastifyPluginAsync } from 'fastify';
+import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { synctera, SyncteraError } from '../lib/synctera.js';
 import { plaid, PlaidError } from '../lib/plaid.js';
@@ -15,6 +16,8 @@ import {
 } from '@paya/shared';
 import { checkRateLimit } from '../lib/redis.js';
 import { generateIdempotencyKey, isNewAccount } from '../lib/utils.js';
+import { getBankAccountService, isFakeBankAccountServiceAvailable } from '../services/bankAccountService.factory.js';
+import { FakeBankAccountService } from '../services/bankAccountService.fake.js';
 
 /**
  * Ensure user has Synctera customer and internal wallet account
@@ -109,6 +112,19 @@ interface VerifyMicroDepositsInput {
   amounts: [number, number]; // Two micro-deposit amounts in cents
 }
 
+interface CreateFakeBankAccountInput {
+  institutionName?: string;
+  accountName?: string;
+  accountType?: 'CHECKING' | 'SAVINGS';
+}
+
+// Schema for fake bank account creation
+const createFakeAccountSchema = z.object({
+  institutionName: z.string().optional(),
+  accountName: z.string().optional(),
+  accountType: z.enum(['CHECKING', 'SAVINGS']).optional(),
+});
+
 export const bankRoutes: FastifyPluginAsync = async (app) => {
   // All routes require authentication
   app.addHook('preValidation', app.authenticate);
@@ -123,23 +139,177 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
         userId: request.userId,
         status: { not: 'removed' },
       },
-      select: {
-        id: true,
-        institutionName: true,
-        accountName: true,
-        accountMask: true,
-        accountType: true,
-        status: true,
-        verifiedAt: true,
-        createdAt: true,
-      },
       orderBy: { createdAt: 'desc' },
     });
 
     return {
       success: true,
-      data: accounts,
+      data: accounts.map(acc => {
+        // Type assertion needed because Prisma Json type isn't fully typed
+        const metadata = (acc as any).metadata as any;
+        return {
+          id: acc.id,
+          institutionName: acc.institutionName,
+          accountName: acc.accountName,
+          accountMask: acc.accountMask,
+          accountType: acc.accountType,
+          status: acc.status,
+          verifiedAt: acc.verifiedAt,
+          createdAt: acc.createdAt,
+          isFake: metadata?.isFake === true,
+        };
+      }),
     };
+  });
+
+  // ==================== FAKE BANK ACCOUNT (Alpha Testing) ====================
+
+  /**
+   * POST /bank/fake/create
+   * Create a fake bank account for alpha testing
+   * Instantly verified, no real bank connection needed
+   * Only available when BANK_SERVICE_MODE=fake or in staging/development
+   */
+  app.post<{ Body: CreateFakeBankAccountInput }>('/fake/create', async (request, reply) => {
+    try {
+      // Validate request body
+      const body = createFakeAccountSchema.parse(request.body || {});
+      
+      request.log.info({ 
+        userId: request.userId,
+        body,
+        nodeEnv: process.env.NODE_ENV,
+        bankServiceMode: process.env.BANK_SERVICE_MODE,
+      }, 'Fake bank account creation request');
+
+      // Check if fake service is available
+      if (!isFakeBankAccountServiceAvailable()) {
+        request.log.warn({ 
+          nodeEnv: process.env.NODE_ENV,
+          bankServiceMode: process.env.BANK_SERVICE_MODE,
+        }, 'Fake bank account service not available');
+        
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.FEATURE_DISABLED,
+            message: 'Fake bank accounts are only available in staging/development environments',
+          },
+        });
+      }
+
+      const { 
+        institutionName = 'Test Bank', 
+        accountName = 'Test Checking Account',
+        accountType = 'CHECKING' 
+      } = body;
+
+      const user = await prisma.user.findUnique({
+        where: { id: request.userId },
+      });
+
+      if (!user) {
+        return reply.status(404).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.USER_NOT_FOUND,
+            message: 'User not found',
+          },
+        });
+      }
+
+      // Force use of fake service for this endpoint (don't use factory)
+      const fakeService = new FakeBankAccountService();
+      
+      request.log.info({ 
+        isAvailable: fakeService.isAvailable(),
+        nodeEnv: process.env.NODE_ENV,
+        bankServiceMode: process.env.BANK_SERVICE_MODE,
+      }, 'Checking fake service availability');
+
+      if (!fakeService.isAvailable()) {
+        request.log.warn('Fake service not available');
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.FEATURE_DISABLED,
+            message: 'Fake bank accounts are only available in staging/development environments',
+          },
+        });
+      }
+
+      request.log.info({ userId: request.userId }, 'Creating fake bank account');
+
+      const result = await fakeService.createAccount(
+        {
+          userId: request.userId,
+          institutionName,
+          accountName,
+          accountType,
+        },
+        user,
+        request
+      );
+
+      request.log.info({ 
+        bankAccountId: result.id,
+        userId: request.userId 
+      }, 'Fake bank account created successfully');
+
+      return reply.status(201).send({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      const errorDetails = {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        name: error instanceof Error ? error.name : undefined,
+        userId: request.userId,
+        body: request.body,
+      };
+      
+      request.log.error(errorDetails, 'Failed to create fake bank account');
+      
+      // Handle Zod validation errors
+      if (error && typeof error === 'object' && 'issues' in error) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: 'Invalid request data',
+          },
+        });
+      }
+      
+      // Check if it's a Prisma error
+      if (error && typeof error === 'object' && 'code' in error) {
+        const prismaError = error as { code?: string; meta?: any };
+        if (prismaError.code === 'P2002') {
+          return reply.status(400).send({
+            success: false,
+            error: {
+              code: ERROR_CODES.VALIDATION_ERROR,
+              message: 'Bank account already exists',
+            },
+          });
+        }
+      }
+      
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : 'Failed to create fake bank account';
+      
+      return reply.status(500).send({
+        success: false,
+        error: {
+          code: ERROR_CODES.INTERNAL_ERROR,
+          message: process.env.NODE_ENV === 'production' 
+            ? 'Failed to create bank account'
+            : errorMessage,
+        },
+      });
+    }
   });
 
   // ==================== PLAID LINK FLOW (Recommended) ====================
@@ -664,38 +834,26 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
 
     const key = idempotencyKey || generateIdempotencyKey();
 
-    // Initiate ACH transfer
-    let externalTransactionId: string | null = null;
-    let transactionStatus: 'pending' | 'completed' = 'pending';
-
-    if (synctera.isConfigured() && bankAccount.syncteraExternalAccountId && user.syncteraAccountId) {
-      try {
-        const achTransfer = await synctera.initiateACHPull({
-          amount: amount * 100, // Convert to cents
-          originating_account_id: bankAccount.syncteraExternalAccountId,
-          receiving_account_id: user.syncteraAccountId,
-          memo: `PaYa load - ${key}`,
+    // Use bank account service to process the load
+    const bankService = getBankAccountService();
+    let loadResult;
+    
+    try {
+      loadResult = await bankService.processLoad(bankAccount, user, amount, key, request);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'TRANSFER_FAILED') {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.TRANSFER_FAILED,
+            message: 'Failed to initiate bank transfer. Please try again.',
+          },
         });
-
-        externalTransactionId = achTransfer.id;
-        request.log.info({ achId: achTransfer.id, amount }, 'ACH pull initiated');
-      } catch (error) {
-        if (error instanceof SyncteraError) {
-          request.log.error({ error: error.message }, 'ACH pull failed');
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.TRANSFER_FAILED,
-              message: 'Failed to initiate bank transfer. Please try again.',
-            },
-          });
-        }
-        throw error;
       }
-    } else if (process.env.NODE_ENV === 'development') {
-      // Development mode - auto-complete
-      transactionStatus = 'completed';
+      throw error;
     }
+
+    const { externalTransactionId, transactionStatus, isInstant } = loadResult;
 
     // Create transaction record
     const transaction = await prisma.$transaction(async (tx) => {
@@ -750,9 +908,11 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
           createdAt: transaction.createdAt,
         },
         newBalance: Number(wallet?.balance || 0),
-        message: transaction.status === 'pending' 
-          ? 'Load initiated. Funds will be available in 3-5 business days.'
-          : 'Funds loaded successfully.',
+        message: isInstant
+          ? 'Funds loaded instantly (test account)'
+          : transaction.status === 'pending' 
+            ? 'Load initiated. Funds will be available in 3-5 business days.'
+            : 'Funds loaded successfully.',
       },
     });
   });
@@ -796,15 +956,50 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    // Check new account redemption restriction
-    if (isNewAccount(user.createdAt, NEW_ACCOUNT.NO_REDEEM_DAYS)) {
-      return reply.status(400).send({
-        success: false,
-        error: {
-          code: ERROR_CODES.RATE_LIMIT_EXCEEDED,
-          message: `New accounts cannot redeem for ${NEW_ACCOUNT.NO_REDEEM_DAYS} days`,
-        },
-      });
+    // Check if this is a fake/test account
+    const bankAccountWithMetadata = bankAccount as any;
+    const isFakeAccount = bankAccountWithMetadata.metadata && 
+      typeof bankAccountWithMetadata.metadata === 'object' && 
+      'isFake' in bankAccountWithMetadata.metadata && 
+      bankAccountWithMetadata.metadata.isFake === true;
+    
+    // Skip KYC and new account checks for fake accounts
+    if (!isFakeAccount) {
+      // Check KYC status FIRST - must be verified to redeem
+      if (user.kycStatus !== 'verified') {
+        request.log.warn({ 
+          userId: request.userId, 
+          kycStatus: user.kycStatus,
+          isFakeAccount: false,
+        }, 'User not KYC verified for redemption');
+        return reply.status(403).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.KYC_REQUIRED,
+            message: 'KYC verification is required to redeem funds.',
+            details: {
+              kycStatus: user.kycStatus || 'unverified',
+              requiresKYC: true,
+            },
+          },
+        });
+      }
+
+      // Check new account redemption restriction (only after KYC check passes)
+      if (isNewAccount(user.createdAt, NEW_ACCOUNT.NO_REDEEM_DAYS)) {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.RATE_LIMIT_EXCEEDED,
+            message: `New accounts cannot redeem for ${NEW_ACCOUNT.NO_REDEEM_DAYS} days`,
+          },
+        });
+      }
+    } else {
+      request.log.info({ 
+        userId: request.userId,
+        bankAccountId: bankAccount.id,
+      }, 'Skipping KYC and 14-day restriction for fake account');
     }
 
     // Calculate fee
@@ -839,37 +1034,26 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
 
     const key = idempotencyKey || generateIdempotencyKey();
 
-    // Initiate ACH push
-    let externalTransactionId: string | null = null;
-    let transactionStatus: 'pending' | 'completed' = 'pending';
-
-    if (synctera.isConfigured() && bankAccount.syncteraExternalAccountId && user.syncteraAccountId) {
-      try {
-        const achTransfer = await synctera.initiateACHPush({
-          amount: amount * 100,
-          originating_account_id: user.syncteraAccountId,
-          receiving_account_id: bankAccount.syncteraExternalAccountId,
-          memo: `PaYa redemption - ${key}`,
+    // Use bank account service to process the redeem
+    const bankService = getBankAccountService();
+    let redeemResult;
+    
+    try {
+      redeemResult = await bankService.processRedeem(bankAccount, user, amount, key, request);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'TRANSFER_FAILED') {
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: ERROR_CODES.TRANSFER_FAILED,
+            message: 'Failed to initiate bank transfer. Please try again.',
+          },
         });
-
-        externalTransactionId = achTransfer.id;
-        request.log.info({ achId: achTransfer.id, amount }, 'ACH push initiated');
-      } catch (error) {
-        if (error instanceof SyncteraError) {
-          request.log.error({ error: error.message }, 'ACH push failed');
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: ERROR_CODES.TRANSFER_FAILED,
-              message: 'Failed to initiate bank transfer. Please try again.',
-            },
-          });
-        }
-        throw error;
       }
-    } else if (process.env.NODE_ENV === 'development') {
-      transactionStatus = 'completed';
+      throw error;
     }
+
+    const { externalTransactionId, transactionStatus, isInstant } = redeemResult;
 
     const transaction = await prisma.$transaction(async (tx) => {
       const existing = await tx.transaction.findUnique({
@@ -936,9 +1120,11 @@ export const bankRoutes: FastifyPluginAsync = async (app) => {
           createdAt: transaction.createdAt,
         },
         newBalance: Number(updatedWallet?.balance || 0),
-        message: transaction.status === 'pending'
-          ? 'Redemption initiated. Funds will arrive in 1-3 business days.'
-          : 'Redemption completed.',
+        message: isInstant
+          ? 'Redemption completed instantly (test account)'
+          : transaction.status === 'pending'
+            ? 'Redemption initiated. Funds will arrive in 1-3 business days.'
+            : 'Redemption completed.',
       },
     });
   });

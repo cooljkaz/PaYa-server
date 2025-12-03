@@ -411,7 +411,9 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       userId: session.user.id,
       username: session.user.username,
       tokenLength: accessToken.length,
+      tokenPrefix: accessToken.substring(0, 30) + '...',
       hasJwtSecret: !!process.env.JWT_ACCESS_SECRET,
+      jwtSecretLength: process.env.JWT_ACCESS_SECRET?.length || 0,
       sessionId: session.id,
     }, 'Token refresh successful - new access token generated');
 

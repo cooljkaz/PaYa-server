@@ -179,6 +179,7 @@ export class PaYaStack extends cdk.Stack {
           NODE_ENV: environment,
           PORT: '3000',
           // Environment-specific settings (not secrets)
+          BANK_SERVICE_MODE: environment === 'production' ? 'real' : 'fake',
           PLAID_ENV: environment === 'production' ? 'production' : 'sandbox',
           SYNCTERA_ENV: environment === 'production' ? 'production' : 'sandbox',
         },
